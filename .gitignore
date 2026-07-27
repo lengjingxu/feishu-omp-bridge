@@ -6,9 +6,12 @@ coverage/
 *.tsbuildinfo
 
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
 .npmrc
+*.pem
+*.key
+*.p12
 
 # Local bridge state and agent session data
 .feishu-omp-bridge/
