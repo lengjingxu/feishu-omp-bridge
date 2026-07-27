@@ -7,6 +7,7 @@ import type { CommandContext } from './index';
 import { runCommandHandler, tryHandleCommand } from './index';
 import { JsonProjectBindingStore } from '../project/store';
 import type { Project } from '../project/types';
+import type { SessionSummary } from '../project/types';
 import { SessionStore } from '../session/store';
 import { WorkspaceStore } from '../workspace/store';
 
@@ -62,5 +63,30 @@ describe('Codex project command workflow', () => {
     await runCommandHandler('project', `open ${project.projectKey}`, ctx);
     expect(create).toHaveBeenCalledTimes(1);
     expect(send).toHaveBeenCalledWith('chat-dm', expect.objectContaining({ markdown: expect.stringContaining('已经绑定') }), expect.any(Object));
+  });
+
+  it('orders projects by their latest non-archived Codex session', async () => {
+    const older: Project = { projectKey: 'local::/tmp/older', name: 'older', cwd: '/tmp/older', hostId: 'local' };
+    const recent: Project = { projectKey: 'local::/tmp/recent', name: 'recent', cwd: '/tmp/recent', hostId: 'local' };
+    const send = vi.fn().mockResolvedValue({ messageId: 'message-2' });
+    const bindings = new JsonProjectBindingStore(join(await mkdtemp(join(tmpdir(), 'feishu-command-test-')), 'bindings.json'));
+    const ctx = context({ send }, bindings, '项目');
+    ctx.projectCatalog = {
+      list: async () => [older, recent],
+      get: async (key: string) => [older, recent].find((item) => item.projectKey === key),
+    };
+    ctx.agent = {
+      ...ctx.agent,
+      listSessions: async (cwd: string): Promise<SessionSummary[]> => cwd === recent.cwd
+        ? [{ threadId: 'recent-thread', preview: '最近会话', cwd, status: 'idle', updatedAt: 200 }]
+        : [{ threadId: 'archived-thread', preview: '归档会话', cwd, status: 'archived', updatedAt: 300 }, { threadId: 'old-thread', preview: '旧会话', cwd, status: 'idle', updatedAt: 100 }],
+    };
+
+    await runCommandHandler('projects', '', ctx);
+
+    const cardText = JSON.stringify(send.mock.calls[0]?.[1]?.card);
+    expect(cardText.indexOf('recent')).toBeGreaterThanOrEqual(0);
+    expect(cardText.indexOf('older')).toBeGreaterThanOrEqual(0);
+    expect(cardText.indexOf('recent')).toBeLessThan(cardText.indexOf('older'));
   });
 });

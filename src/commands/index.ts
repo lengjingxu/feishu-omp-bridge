@@ -50,7 +50,7 @@ import type { WorkspaceStore } from '../workspace/store';
 import { createBoundChat, defaultChatName } from '../bot/group';
 import { lookupMessageThreadId } from '../bot/thread';
 import type { ProjectCatalog } from '../project/catalog';
-import type { ProjectBindingStore } from '../project/types';
+import type { Project, ProjectBindingStore } from '../project/types';
 
 export interface Controls {
   /** Restart the bridge in-process: disconnect WS, kill OMP runs, reload
@@ -241,7 +241,7 @@ async function handleProjects(args: string, ctx: CommandContext): Promise<void> 
     await reply(ctx, '当前 Bridge 尚未启用项目模式，请先在配置中将 agentBackend 设置为 codex。');
     return;
   }
-  const all = await ctx.projectCatalog.list();
+  const all = await sortProjectsByRecentSession(await ctx.projectCatalog.list(), ctx.agent);
   const onlyBound = args.trim() === 'bound';
   const projects = all
     .map((project) => ({ ...project, chatId: ctx.projectBindings?.projectFor(project.projectKey)?.chatId }))
@@ -249,6 +249,30 @@ async function handleProjects(args: string, ctx: CommandContext): Promise<void> 
   const pageArg = args.trim().startsWith('page ') ? args.trim().slice(5) : args.trim();
   const page = pageArg ? Math.max(0, Number.parseInt(pageArg, 10) || 0) : 0;
   await ctx.channel.send(ctx.msg.chatId, { card: projectsCard(projects, page) }, { replyTo: ctx.msg.messageId });
+}
+
+/**
+ * Project roots do not have a reliable filesystem "last used" timestamp.
+ * Codex session activity is the useful recency signal, so keep projects with
+ * the newest non-archived session at the top of the picker.
+ */
+async function sortProjectsByRecentSession(projects: Project[], agent: AgentAdapter): Promise<Project[]> {
+  if (!agent.listSessions) return projects;
+  const ranked = await Promise.all(projects.map(async (project, index) => {
+    try {
+      const sessions = await agent.listSessions!(project.cwd);
+      const updatedAt = sessions
+        .filter((session) => session.status !== 'archived')
+        .reduce((latest, session) => Math.max(latest, session.updatedAt), 0);
+      return { project, index, updatedAt };
+    } catch (err) {
+      log.warn('project', 'activity-sort-failed', { cwd: project.cwd, err: String(err) });
+      return { project, index, updatedAt: 0 };
+    }
+  }));
+  return ranked
+    .sort((a, b) => b.updatedAt - a.updatedAt || a.index - b.index)
+    .map(({ project }) => project);
 }
 
 async function handleProject(args: string, ctx: CommandContext): Promise<void> {
