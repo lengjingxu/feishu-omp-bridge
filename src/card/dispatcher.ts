@@ -18,6 +18,7 @@ import {
 import type { WorkspaceStore } from '../workspace/store';
 import type { ProjectCatalog } from '../project/catalog';
 import type { ProjectBindingStore } from '../project/types';
+import { isThreadScoped } from '../bot/scope';
 
 /** Marker key on a button's value object that flags the cardAction as
  * a callback that should be forwarded back to the agent instead of dispatched
@@ -134,15 +135,12 @@ async function resolveScope(
 ): Promise<{ scope: string; threadId: string | undefined; mode: 'p2p' | 'group' | 'topic' }> {
   const chatId = deps.evt.chatId;
   const mode = await deps.chatModeCache.resolve(deps.channel, chatId);
-  if (mode !== 'topic') {
-    return { scope: chatId, threadId: undefined, mode };
-  }
-  // Topic group — need the carrier message's thread_id to compose scope.
-  // One API call per click; could cache by messageId if it ever becomes hot.
+  const projectChat = Boolean(deps.projectBindings?.findProjectByChat(chatId));
+  // The carrier message is the reliable source of thread_id. A thread-enabled
+  // private group is still returned as `group` by chat.get, so only checking
+  // the cached mode loses the project/session binding on card clicks.
   const threadId = await lookupMessageThreadId(deps.channel, deps.evt.messageId);
-  if (!threadId) {
-    // Fall back to plain chatId. Better to land in the chat's "default"
-    // scope than fail the click silently.
+  if (!isThreadScoped(mode, threadId, projectChat)) {
     return { scope: chatId, threadId: undefined, mode };
   }
   return { scope: `${chatId}:${threadId}`, threadId, mode };

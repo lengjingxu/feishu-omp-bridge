@@ -52,6 +52,7 @@ import { PendingQueue } from './pending-queue';
 import { ProcessPool } from './process-pool';
 import { fetchQuotedContext, renderQuotedBlock, type QuotedContext } from './quote';
 import { addWorkingReaction, removeReaction } from './reaction';
+import { isThreadScoped } from './scope';
 
 const DEBOUNCE_MS = 600;
 
@@ -378,13 +379,17 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
   // Resolve scope (and underlying chat mode) once at intake — every
   // downstream consumer keys off these.
   const chatMode = await chatModeCache.resolve(channel, msg.chatId);
-  const scope = chatMode === 'topic' && msg.threadId
+  const project = projectBindings?.findProjectByChat(msg.chatId);
+  const threadScoped = isThreadScoped(chatMode, msg.threadId, Boolean(project));
+  const scope = threadScoped
     ? `${msg.chatId}:${msg.threadId}`
     : msg.chatId;
   log.info('intake', 'enter', {
     scope,
     chatType: msg.chatType,
     chatMode,
+    threadId: msg.threadId,
+    threadScoped,
     sender: msg.senderId,
     preview,
     resources: msg.resources.length,
@@ -423,7 +428,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     msg.chatType !== 'p2p' &&
     getRequireMentionInGroup(controls.cfg) &&
     !msg.mentionedBot &&
-    !(projectBindings?.findProjectByChat(msg.chatId) && !msg.threadId)
+    !project
   ) {
     log.info('intake', 'skip-no-mention', { scope, chatType: msg.chatType });
     return;
@@ -452,14 +457,17 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
   // messages to an arbitrary working directory. Guide the user to the card
   // flow instead; ordinary topic messages are allowed through below.
   if (getAgentBackend(controls.cfg) === 'codex') {
-    const project = projectBindings?.findProjectByChat(msg.chatId);
     if (msg.chatType === 'p2p' || (project && !msg.threadId)) {
       await channel.send(msg.chatId, { card: project ? projectWelcomeCard(project) : welcomeCard() }, { replyTo: msg.messageId });
       pending.cancel(scope);
       return;
     }
     if (project && msg.threadId && !projectBindings?.findTopic(msg.chatId, msg.threadId)) {
-      await channel.send(msg.chatId, { markdown: '请先在项目群中点击“查看会话”，选择一个会话后再开始对话。' }, { replyTo: msg.messageId });
+      await channel.send(
+        msg.chatId,
+        { markdown: '这个话题还没有绑定 Codex 会话。请回到项目群，点击“查看会话”，再选择“继续此会话”或“新建会话”。' },
+        { replyTo: msg.messageId, replyInThread: true },
+      );
       pending.cancel(scope);
       return;
     }
@@ -578,6 +586,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
 
   const project = projectBindings?.findProjectByChat(chatId);
   const topicBinding = threadId ? projectBindings?.findTopic(chatId, threadId) : undefined;
+  const threadScoped = isThreadScoped(mode, threadId, Boolean(project));
   const cwd = project?.cwd ?? workspaces.cwdFor(scope) ?? homedir();
   const resumeFrom = topicBinding?.codexThreadId ?? sessions.resumeFor(scope, cwd);
   if (resumeFrom) {
@@ -640,7 +649,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   // topic discussion breaks visually.
   const sendOpts = {
     replyTo: lastMsg.messageId,
-    ...(mode === 'topic' && threadId ? { replyInThread: true } : {}),
+    ...(threadScoped ? { replyInThread: true } : {}),
   };
 
   const uiCards = new Map<string, { messageId: string; title: string }>();
