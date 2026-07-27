@@ -80,23 +80,23 @@ export function renderOmpUiRequestCard(request: AgentUiRequest, scope?: string):
         tag: 'input',
         name: OMP_UI_VALUE_FIELD,
         default_value: request.prefill ?? '',
-        placeholder: { tag: 'plain_text', content: request.promptStyle ? '输入要发送给 OMP 的内容' : '请输入' },
+        placeholder: { tag: 'plain_text', content: request.promptStyle ? '输入要发送给助手的内容' : '请输入' },
         input_type: 'multiline_text',
       },
     ], scope));
   }
 
-  return shell('等待 OMP 交互', elements);
+  return shell('等待你的确认', elements);
 }
 
 export function renderOmpUiResultCard(title: string, status: 'submitted' | 'cancelled' | 'unavailable'): object {
   const text =
     status === 'submitted'
-      ? '✅ 已提交给 OMP。'
+      ? '✅ 已提交。'
       : status === 'cancelled'
-        ? '已取消，OMP 会按取消处理。'
-        : '⚠️ 当前 OMP 任务已结束，无法提交这个交互。';
-  return shell('OMP 交互已处理', [markdown(`🧩 **${escapeMd(title)}**`), markdown(text)]);
+        ? '已取消，助手会按取消处理。'
+        : '⚠️ 当前任务已结束，无法提交这个交互。';
+  return shell('交互已处理', [markdown(`🧩 **${escapeMd(title)}**`), markdown(text)]);
 }
 
 function form(request: AgentUiRequest, elements: object[], scope?: string): object {
@@ -176,13 +176,13 @@ function callbackValue(request: AgentUiRequest, action: string, scope?: string):
 function introText(request: AgentUiRequest): string {
   switch (request.method) {
     case 'select':
-      return 'OMP 需要你选择一个选项。';
+      return '助手需要你选择一个选项。';
     case 'confirm':
-      return 'OMP 需要你确认是否继续。';
+      return '助手需要你确认是否继续。';
     case 'input':
-      return 'OMP 需要你输入一段文本。';
+      return '助手需要你输入一段文本。';
     case 'editor':
-      return request.promptStyle ? 'OMP 需要你编辑即将发送的提示词。' : 'OMP 需要你编辑一段多行文本。';
+      return request.promptStyle ? '助手需要你编辑即将发送的提示词。' : '助手需要你编辑一段多行文本。';
   }
 }
 

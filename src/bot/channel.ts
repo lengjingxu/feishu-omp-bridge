@@ -19,10 +19,12 @@ import {
   type RunState,
 } from '../card/run-state';
 import { renderText } from '../card/text-renderer';
+import { projectWelcomeCard, welcomeCard } from '../card/templates';
 import { tryHandleCommand, type Controls } from '../commands';
 import type { AppConfig } from '../config/schema';
 import {
   getAgentStopGraceMs,
+  getAgentBackend,
   getOmpModel,
   getMaxConcurrentRuns,
   getMessageReplyMode,
@@ -37,6 +39,8 @@ import { log, withTrace } from '../core/logger';
 import { MediaCache, type LocalAttachment } from '../media/cache';
 import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
+import type { ProjectCatalog } from '../project/catalog';
+import type { ProjectBindingStore } from '../project/types';
 import { ActiveRuns, type RunHandle } from './active-runs';
 import { ChatModeCache, type ChatMode } from './chat-mode-cache';
 import { handleCommentMention } from './comments';
@@ -119,10 +123,12 @@ export interface StartChannelDeps {
   sessions: SessionStore;
   workspaces: WorkspaceStore;
   controls: Controls;
+  projectCatalog?: ProjectCatalog;
+  projectBindings?: ProjectBindingStore;
 }
 
 export async function startChannel(deps: StartChannelDeps): Promise<BridgeChannel> {
-  const { cfg, agent, sessions, workspaces, controls } = deps;
+  const { cfg, agent, sessions, workspaces, controls, projectCatalog, projectBindings } = deps;
   const activeRuns = new ActiveRuns();
   // ChatModeCache stays per-bridge-instance — invalidated on restart along
   // with everything else. Topic-mode chats only need one chat.get() call ever.
@@ -206,6 +212,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           controls,
           scope,
           mode,
+          projectBindings,
         });
       } catch (err) {
         log.fail('flush', err);
@@ -234,6 +241,8 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           msg,
           controls,
           chatModeCache,
+          projectCatalog,
+          projectBindings,
         }),
       ).catch((err) => log.fail('intake', err));
     },
@@ -252,6 +261,8 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           controls,
           pending,
           chatModeCache,
+          projectCatalog,
+          projectBindings,
         });
       }).catch((err) => log.fail('cardAction', err));
     },
@@ -328,7 +339,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
       pending.cancelAll();
       await channel.disconnect();
       await activeRuns.stopAll();
-      await Promise.allSettled([sessions.flush(), workspaces.flush()]);
+      await Promise.allSettled([sessions.flush(), workspaces.flush(), projectBindings?.flush()]);
     },
   };
 }
@@ -344,6 +355,8 @@ interface IntakeDeps {
   msg: NormalizedMessage;
   controls: Controls;
   chatModeCache: ChatModeCache;
+  projectCatalog?: ProjectCatalog;
+  projectBindings?: ProjectBindingStore;
 }
 
 async function intakeMessage(deps: IntakeDeps): Promise<void> {
@@ -358,6 +371,8 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     msg,
     controls,
     chatModeCache,
+    projectCatalog,
+    projectBindings,
   } = deps;
   const preview = msg.content.length > 80 ? `${msg.content.slice(0, 80)}…` : msg.content;
   // Resolve scope (and underlying chat mode) once at intake — every
@@ -407,7 +422,8 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
   if (
     msg.chatType !== 'p2p' &&
     getRequireMentionInGroup(controls.cfg) &&
-    !msg.mentionedBot
+    !msg.mentionedBot &&
+    !(projectBindings?.findProjectByChat(msg.chatId) && !msg.threadId)
   ) {
     log.info('intake', 'skip-no-mention', { scope, chatType: msg.chatType });
     return;
@@ -423,11 +439,30 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     agent,
     activeRuns,
     controls,
+    projectCatalog,
+    projectBindings,
   });
   if (handled) {
     const dropped = pending.cancel(scope);
     log.info('intake', 'command', { scope, droppedPending: dropped.length });
     return;
+  }
+
+  // Codex project mode intentionally does not send unbound DM or project-group
+  // messages to an arbitrary working directory. Guide the user to the card
+  // flow instead; ordinary topic messages are allowed through below.
+  if (getAgentBackend(controls.cfg) === 'codex') {
+    const project = projectBindings?.findProjectByChat(msg.chatId);
+    if (msg.chatType === 'p2p' || (project && !msg.threadId)) {
+      await channel.send(msg.chatId, { card: project ? projectWelcomeCard(project) : welcomeCard() }, { replyTo: msg.messageId });
+      pending.cancel(scope);
+      return;
+    }
+    if (project && msg.threadId && !projectBindings?.findTopic(msg.chatId, msg.threadId)) {
+      await channel.send(msg.chatId, { markdown: '请先在项目群中点击“查看会话”，选择一个会话后再开始对话。' }, { replyTo: msg.messageId });
+      pending.cancel(scope);
+      return;
+    }
   }
 
   if (await submitToActiveRun({ channel, activeRuns, media, msg, scope })) {
@@ -473,6 +508,7 @@ interface RunBatchDeps {
   controls: Controls;
   scope: string;
   mode: ChatMode;
+  projectBindings?: ProjectBindingStore;
 }
 
 interface AgentStreamHooks {
@@ -492,6 +528,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     controls,
     scope,
     mode,
+    projectBindings,
   } = deps;
   if (batch.length === 0) return;
   const firstMsg = batch[0];
@@ -539,8 +576,10 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   const prompt = buildPrompt(batch, attachments, quotes);
   log.info('prompt', 'built', { promptChars: prompt.length, quotes: quotes.length });
 
-  const cwd = workspaces.cwdFor(scope) ?? homedir();
-  const resumeFrom = sessions.resumeFor(scope, cwd);
+  const project = projectBindings?.findProjectByChat(chatId);
+  const topicBinding = threadId ? projectBindings?.findTopic(chatId, threadId) : undefined;
+  const cwd = project?.cwd ?? workspaces.cwdFor(scope) ?? homedir();
+  const resumeFrom = topicBinding?.codexThreadId ?? sessions.resumeFor(scope, cwd);
   if (resumeFrom) {
     log.info('session', 'resume', { sessionId: resumeFrom, cwd });
   } else {
@@ -916,4 +955,3 @@ function stripAttachmentRefs(text: string, fileKeys: string[]): string {
   }
   return out.replace(/\n{3,}/g, '\n\n');
 }
-

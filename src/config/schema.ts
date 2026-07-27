@@ -92,6 +92,12 @@ export interface AppAccess {
 }
 
 export interface AppPreferences {
+  /** Selects the agent runtime. OMP remains the backwards-compatible default. */
+  agentBackend?: 'omp' | 'codex';
+  /** Codex executable used for the app-server transport. */
+  codexAppServerBinary?: string;
+  /** Local project roots exposed by the Feishu project picker. */
+  projectRoots?: string[];
   /** OMP executable name or path. Default: omp. */
   ompBinary?: string;
   /** Optional OMP model passed as `--model`. Empty means OMP config decides. */
@@ -211,6 +217,21 @@ export function getOmpBinary(cfg: AppConfig): string {
   const raw = cfg.preferences?.ompBinary ?? cfg.preferences?.codexBinary;
   if (typeof raw !== 'string' || raw.trim() === '') return 'omp';
   return raw.trim();
+}
+
+export function getAgentBackend(cfg: AppConfig): 'omp' | 'codex' {
+  return cfg.preferences?.agentBackend === 'codex' ? 'codex' : 'omp';
+}
+
+export function getCodexAppServerBinary(cfg: AppConfig): string {
+  const raw = cfg.preferences?.codexAppServerBinary;
+  return typeof raw === 'string' && raw.trim() ? raw.trim() : 'codex';
+}
+
+export function getProjectRoots(cfg: AppConfig): string[] {
+  const roots = cfg.preferences?.projectRoots;
+  if (!Array.isArray(roots)) return [];
+  return roots.filter((root): root is string => typeof root === 'string' && root.trim() !== '').map((root) => root.trim());
 }
 
 export function getOmpModel(cfg: AppConfig): string | undefined {

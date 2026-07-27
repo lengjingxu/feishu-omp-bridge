@@ -1,7 +1,7 @@
 import dns from 'node:dns';
 import { createInterface } from 'node:readline';
 import pkg from '../../../package.json';
-import { OmpAdapter } from '../../agent';
+import { CodexAdapter, OmpAdapter } from '../../agent';
 import { startChannel, type BridgeChannel } from '../../bot/channel';
 import { runRegistrationWizard } from '../../bot/wizard';
 import type { Controls } from '../../commands';
@@ -13,6 +13,8 @@ import {
   getOmpSessionDir,
   getOmpThinking,
   getOmpTools,
+  getAgentBackend,
+  getCodexAppServerBinary,
   isComplete,
   secretKeyForApp,
 } from '../../config/schema';
@@ -35,6 +37,8 @@ import {
 } from '../../runtime/registry';
 import { SessionStore } from '../../session/store';
 import { WorkspaceStore } from '../../workspace/store';
+import { LocalProjectCatalog } from '../../project/catalog';
+import { JsonProjectBindingStore } from '../../project/store';
 
 // Prefer IPv4 — Node 20+ defaults to "verbatim" which respects whatever
 // the resolver returns first; in IPv6-broken networks (WSL2, certain VPNs,
@@ -83,15 +87,16 @@ export async function runStart(opts: StartOptions): Promise<void> {
 
   await preFlightChecks({ skipCheckLarkCli: opts.skipCheckLarkCli });
 
-  const agent = new OmpAdapter({
-    binary: getOmpBinary(cfg),
-    sessionDir: getOmpSessionDir(cfg),
-    thinking: getOmpThinking(cfg),
-    tools: getOmpTools(cfg),
-  });
+  const agent = getAgentBackend(cfg) === 'codex'
+    ? new CodexAdapter({ binary: getCodexAppServerBinary(cfg) })
+    : new OmpAdapter({
+      binary: getOmpBinary(cfg),
+      sessionDir: getOmpSessionDir(cfg),
+      thinking: getOmpThinking(cfg),
+      tools: getOmpTools(cfg),
+    });
   if (!(await agent.isAvailable())) {
-    console.error('✗ 未找到 omp CLI。请先安装并完成 Oh My Pi 配置：');
-    console.error('  omp');
+    console.error(`✗ 未找到 ${agent.displayName}。请先安装并完成配置。`);
     process.exit(1);
   }
 
@@ -99,6 +104,10 @@ export async function runStart(opts: StartOptions): Promise<void> {
   await sessions.load();
   const workspaces = new WorkspaceStore();
   await workspaces.load();
+  const projectCatalog = new LocalProjectCatalog(cfg);
+  const projectBindings = new JsonProjectBindingStore();
+  await projectBindings.load();
+  projectBindings.registerProjects?.(await projectCatalog.list());
 
   await gcMediaCache(MEDIA_GC_MAX_AGE_MS);
   await gcOldLogs();
@@ -176,6 +185,8 @@ export async function runStart(opts: StartOptions): Promise<void> {
           sessions,
           workspaces,
           controls,
+          projectCatalog,
+          projectBindings,
         });
         console.log('[restart] disconnecting old bridge...');
         try {
@@ -202,7 +213,7 @@ export async function runStart(opts: StartOptions): Promise<void> {
     },
   };
 
-  bridge = await startChannel({ cfg, agent, sessions, workspaces, controls });
+  bridge = await startChannel({ cfg, agent, sessions, workspaces, controls, projectCatalog, projectBindings });
 
   // Backfill the bot's display name into the registry once WS handshake is
   // done — future starts conflicting on this app can show it in the prompt
@@ -380,4 +391,3 @@ async function persistEncrypted(cfg: AppConfig, configPath: string): Promise<App
   await saveConfig(next, configPath);
   return next;
 }
-

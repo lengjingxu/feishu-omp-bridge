@@ -16,6 +16,8 @@ import {
   responseFromOmpUiAction,
 } from './omp-ui';
 import type { WorkspaceStore } from '../workspace/store';
+import type { ProjectCatalog } from '../project/catalog';
+import type { ProjectBindingStore } from '../project/types';
 
 /** Marker key on a button's value object that flags the cardAction as
  * a callback that should be forwarded back to the agent instead of dispatched
@@ -35,6 +37,8 @@ export interface CardDispatchDeps {
   controls: Controls;
   pending: PendingQueue;
   chatModeCache: ChatModeCache;
+  projectCatalog?: ProjectCatalog;
+  projectBindings?: ProjectBindingStore;
 }
 
 export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
@@ -109,6 +113,8 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
     controls: deps.controls,
     formValue,
     fromCardAction: true,
+    projectCatalog: deps.projectCatalog,
+    projectBindings: deps.projectBindings,
   };
 
   const [name, ...rest] = cmd.split('.');

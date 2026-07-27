@@ -138,10 +138,11 @@ async function reportConnectAfter(
 
   const entry = await waitForServiceConnect(appId, beforePids);
   if (entry) {
-    const agent = new OmpAdapter();
+    const agent = cfg.preferences?.agentBackend === 'codex' ? undefined : new OmpAdapter();
     const verbZh = verb === 'started' ? '已启动' : '已重启';
+    const agentLabel = agent ? `${agent.displayName} (${agent.id})` : 'Codex (codex)';
     console.log(
-      `✓ ${verbZh}  bot: ${entry.botName} (${entry.appId})  agent: ${agent.displayName} (${agent.id})  进程: ${entry.id}`,
+      `✓ ${verbZh}  bot: ${entry.botName} (${entry.appId})  agent: ${agentLabel}  进程: ${entry.id}`,
     );
     return;
   }

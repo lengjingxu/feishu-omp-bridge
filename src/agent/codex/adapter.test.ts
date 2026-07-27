@@ -1,0 +1,68 @@
+import { chmod, mkdtemp, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { describe, expect, it } from 'vitest';
+import { CodexAdapter } from './adapter';
+import type { AgentEvent } from '../types';
+
+async function fakeCodex(): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), 'codex-adapter-test-'));
+  const path = join(dir, 'codex-fake.mjs');
+  await writeFile(path, `#!/usr/bin/env node
+import { createInterface } from 'node:readline';
+if (process.argv.includes('--version')) { console.log('codex-cli test'); process.exit(0); }
+const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
+const send = (value) => console.log(JSON.stringify(value));
+for await (const line of rl) {
+  const msg = JSON.parse(line);
+  if (msg.method === 'initialize') send({ id: msg.id, result: {} });
+  if (msg.method === 'thread/list') send({ id: msg.id, result: { data: [{ id: 'thread-existing', name: '旧会话', preview: '修复卡片', cwd: '/tmp/project', updatedAt: 10, status: { type: 'idle' } }], nextCursor: msg.params.cursor ? null : 'cursor-2', backwardsCursor: null } });
+  if (msg.method === 'thread/start') send({ id: msg.id, result: { thread: { id: 'thread-new', name: null, preview: '', cwd: '/tmp/project' } } });
+  if (msg.method === 'thread/resume') send({ id: msg.id, result: { thread: { id: msg.params.threadId, cwd: '/tmp/project' } } });
+  if (msg.method === 'turn/start') {
+    send({ id: msg.id, result: { turn: { id: 'turn-1' } } });
+    send({ method: 'item/agentMessage/delta', params: { threadId: 'thread-new', turnId: 'turn-1', itemId: 'item-1', delta: '完成' } });
+    send({ method: 'turn/completed', params: { threadId: 'thread-new', turn: { id: 'turn-1', status: 'completed' } } });
+  }
+  if (msg.method === 'turn/interrupt') send({ id: msg.id, result: {} });
+  if (msg.method === 'thread/archive') send({ id: msg.id, result: {} });
+}
+`, 'utf8');
+  await chmod(path, 0o700);
+  return path;
+}
+
+async function collect(events: AsyncIterable<AgentEvent>): Promise<AgentEvent[]> {
+  const result: AgentEvent[] = [];
+  for await (const event of events) result.push(event);
+  return result;
+}
+
+describe('CodexAdapter', () => {
+  it('lists sessions by project cwd', async () => {
+    const adapter = new CodexAdapter({ binary: await fakeCodex() });
+    await expect(adapter.isAvailable()).resolves.toBe(true);
+    await expect(adapter.listSessions('/tmp/project')).resolves.toEqual([{
+      threadId: 'thread-existing',
+      name: '旧会话',
+      preview: '修复卡片',
+      cwd: '/tmp/project',
+      status: 'idle',
+      updatedAt: 10_000,
+    }]);
+    await expect(adapter.listSessionPage?.('/tmp/project')).resolves.toMatchObject({ nextCursor: 'cursor-2' });
+    await expect(adapter.archiveSession?.('thread-existing')).resolves.toBeUndefined();
+    await adapter.close();
+  });
+
+  it('starts a thread and translates app-server events', async () => {
+    const adapter = new CodexAdapter({ binary: await fakeCodex() });
+    const run = adapter.run({ prompt: '请测试', cwd: '/tmp/project' });
+    await expect(collect(run.events)).resolves.toEqual([
+      { type: 'system', sessionId: 'thread-new', cwd: '/tmp/project', model: undefined },
+      { type: 'text', delta: '完成' },
+      { type: 'done', sessionId: 'thread-new' },
+    ]);
+    await adapter.close();
+  });
+});

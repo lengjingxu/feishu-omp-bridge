@@ -1,6 +1,6 @@
 # feishu-omp-bridge
 
-把飞书 / Lark 消息和本地 Oh My Pi CLI 打通的轻量 bot。飞书消息会进入 `omp --mode rpc`，结果以卡片或 Markdown 流式回到飞书，并按 chat / topic 维度隔离保存 OMP 会话。
+把飞书 / Lark 消息和本地 Oh My Pi CLI 或 Codex app-server 打通的轻量 bot。飞书使用应用长连接接收消息，结果以中文卡片或 Markdown 流式回到飞书，并按项目 / 话题维度隔离保存会话。
 
 ## 能干什么
 
@@ -15,12 +15,34 @@
 - 保留 bridge 命令：`/new`、`/cd`、`/ws`、`/status`、`/config`、`/stop`、`/timeout`、`/ps`、`/exit`、`/reconnect`、`/doctor`。
 - 图片 / 文件会下载到本地路径；图片会转成 OMP RPC image payload。
 - OMP 可以继续使用本机可用工具，例如 `lark-cli`、`git`、项目测试命令等。
+- Codex 项目模式使用本机 `codex app-server`，通过飞书长连接收发消息，不需要给 Bridge 配置公网回调地址。
+
+## Codex 项目模式
+
+将 `preferences.agentBackend` 设置为 `codex`，并配置允许展示给飞书用户的本地项目目录：
+
+```json
+{
+  "preferences": {
+    "agentBackend": "codex",
+    "projectRoots": [
+      "/Users/you/projects",
+      "/Users/you/work"
+    ]
+  }
+}
+```
+
+首次私聊机器人时，发送“项目”或点击欢迎卡片中的“选择项目”。选择项目后，Bridge 会自动创建一个私有话题群；在群里点击“查看会话”，选择已有会话或“新建会话”，随后进入自动创建的话题即可直接输入中文需求。
+
+Codex 模式中的用户入口以飞书卡片为主，不需要记忆英文命令。`/projects`、`/sessions`、`/status`、`/stop`、`/new` 等命令仍保留，方便高级用户排查问题。
 
 ## 前置条件
 
 - Node.js 20+
 - pnpm（源码开发 / 本地构建时使用）
-- 已安装并配置 Oh My Pi CLI：先运行一次 `omp`，并确认 `omp --mode rpc` 可用。
+- OMP 模式：已安装并配置 Oh My Pi CLI；先运行一次 `omp`，并确认 `omp --mode rpc` 可用。
+- Codex 模式：已安装并完成登录的 `codex` CLI，并确认 `codex app-server --help` 可用。
 - 一个飞书 / Lark PersonalAgent 应用；首次启动向导会协助配置。
 
 ## 安装 / 构建
@@ -106,6 +128,8 @@ feishu-omp-bridge unregister            删除 daemon 注册文件
 
 其他普通消息会直接交给 OMP。群聊默认需要 `@bot`；私聊不需要。
 
+Codex 项目模式下，推荐直接点击卡片；也支持发送“项目”“会话”“新建”“状态”“停止”“帮助”等中文快捷词。项目群顶层只处理项目操作，自动创建的话题才会把普通消息交给对应 Codex 会话。
+
 ## 数据目录
 
 | 路径 | 用途 |
@@ -113,6 +137,7 @@ feishu-omp-bridge unregister            删除 daemon 注册文件
 | `~/.feishu-omp-bridge/config.json` | App 凭据、secret refs、偏好配置。 |
 | `~/.feishu-omp-bridge/secrets.enc` | 本地加密 secret keystore。 |
 | `~/.feishu-omp-bridge/sessions.json` | 每个 chat / topic 的 OMP session id、cwd 和可选 timeout 覆盖。 |
+| `~/.feishu-omp-bridge/project-bindings.json` | Project → 飞书群、话题 → Codex session 的持久化映射。 |
 | `~/.feishu-omp-bridge/omp-sessions/` | bridge 专用 OMP JSONL session 文件。 |
 | `~/.feishu-omp-bridge/workspaces.json` | 命名工作空间映射。 |
 | `~/.feishu-omp-bridge/processes.json` | 当前运行的 bridge 进程注册表。 |

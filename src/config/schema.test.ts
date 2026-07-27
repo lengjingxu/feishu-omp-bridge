@@ -5,6 +5,9 @@ import {
   getOmpSessionDir,
   getOmpThinking,
   getOmpTools,
+  getAgentBackend,
+  getCodexAppServerBinary,
+  getProjectRoots,
   type AppConfig,
 } from './schema';
 
@@ -40,5 +43,14 @@ describe('OMP preferences', () => {
     expect(getOmpThinking(cfg({ ompThinking: ' xhigh ' }))).toBe('xhigh');
     expect(getOmpTools(cfg({ ompTools: ' read,bash ' }))).toBe('read,bash');
     expect(getOmpSessionDir(cfg({ ompSessionDir: ' /tmp/sessions ' }))).toBe('/tmp/sessions');
+  });
+});
+
+describe('Codex project preferences', () => {
+  it('keeps OMP as the default and trims Codex settings', () => {
+    expect(getAgentBackend(cfg())).toBe('omp');
+    expect(getAgentBackend(cfg({ agentBackend: 'codex' }))).toBe('codex');
+    expect(getCodexAppServerBinary(cfg({ codexAppServerBinary: ' /opt/codex ' }))).toBe('/opt/codex');
+    expect(getProjectRoots(cfg({ projectRoots: [' /tmp/a ', '', 3 as unknown as string] }))).toEqual(['/tmp/a']);
   });
 });

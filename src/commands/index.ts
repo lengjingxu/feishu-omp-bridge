@@ -11,7 +11,16 @@ import {
 } from '../card/account-cards';
 import { configCancelledCard, configFormCard, configSavedCard } from '../card/config-card';
 import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../card/managed';
-import { helpCard, statusCard, workspacesCard } from '../card/templates';
+import {
+  helpCard,
+  projectWelcomeCard,
+  projectsCard,
+  sessionsCard,
+  statusCard,
+  topicWelcomeCard,
+  welcomeCard,
+  workspacesCard,
+} from '../card/templates';
 import type { AppConfig, MessageReplyMode, TenantBrand } from '../config/schema';
 import {
   getAgentStopGraceMs,
@@ -39,6 +48,8 @@ import type { SessionStore } from '../session/store';
 import { validateAppCredentials } from '../utils/feishu-auth';
 import type { WorkspaceStore } from '../workspace/store';
 import { createBoundChat, defaultChatName } from '../bot/group';
+import type { ProjectCatalog } from '../project/catalog';
+import type { ProjectBindingStore } from '../project/types';
 
 export interface Controls {
   /** Restart the bridge in-process: disconnect WS, kill OMP runs, reload
@@ -81,11 +92,18 @@ export interface CommandContext {
    * text command. Determines whether to update the existing card vs send a
    * new one. */
   fromCardAction?: boolean;
+  projectCatalog?: ProjectCatalog;
+  projectBindings?: ProjectBindingStore;
 }
 
 type Handler = (args: string, ctx: CommandContext) => Promise<void>;
 
 const handlers: Record<string, Handler> = {
+  '/projects': handleProjects,
+  '/sessions': handleSessions,
+  '/project': handleProject,
+  '/session': handleSession,
+  '/welcome': handleWelcome,
   '/new': handleNew,
   '/reset': handleNew,
   '/cd': handleCd,
@@ -124,8 +142,15 @@ function isAdminCommand(cmd: string): boolean {
 
 export async function tryHandleCommand(ctx: CommandContext): Promise<boolean> {
   const trimmed = ctx.msg.content.trim();
-  if (!trimmed.startsWith('/')) return false;
-  const parts = trimmed.split(/\s+/);
+  const aliases: Record<string, string> = {
+    '项目': '/projects', '我的项目': '/projects', '选择项目': '/projects', '项目群': '/projects', '开始': '/projects',
+    '会话': '/sessions', '查看会话': '/sessions', '新建': '/session new', '新建会话': '/session new',
+    '状态': '/status', '当前状态': '/status', '停止': '/stop', '停止任务': '/stop',
+    '帮助': '/help', '怎么用': '/help',
+  };
+  const normalized = aliases[trimmed] ?? trimmed;
+  if (!normalized.startsWith('/')) return false;
+  const parts = normalized.split(/\s+/);
   const cmd = parts[0] ?? '';
   const args = parts.slice(1).join(' ');
   const h = handlers[cmd];
@@ -204,6 +229,149 @@ async function handleNew(args: string, ctx: CommandContext): Promise<void> {
   const wasRunning = ctx.activeRuns.interrupt(ctx.scope);
   ctx.sessions.clear(ctx.scope);
   await reply(ctx, wasRunning ? '已中断当前任务并开始新会话。' : '已开始新会话。');
+}
+
+async function handleWelcome(_args: string, ctx: CommandContext): Promise<void> {
+  await ctx.channel.send(ctx.msg.chatId, { card: welcomeCard() }, { replyTo: ctx.msg.messageId });
+}
+
+async function handleProjects(args: string, ctx: CommandContext): Promise<void> {
+  if (!ctx.projectCatalog || !ctx.projectBindings) {
+    await reply(ctx, '当前 Bridge 尚未启用项目模式，请先在配置中将 agentBackend 设置为 codex。');
+    return;
+  }
+  const all = await ctx.projectCatalog.list();
+  const onlyBound = args.trim() === 'bound';
+  const projects = all
+    .map((project) => ({ ...project, chatId: ctx.projectBindings?.projectFor(project.projectKey)?.chatId }))
+    .filter((project) => !onlyBound || Boolean(project.chatId));
+  const pageArg = args.trim().startsWith('page ') ? args.trim().slice(5) : args.trim();
+  const page = pageArg ? Math.max(0, Number.parseInt(pageArg, 10) || 0) : 0;
+  await ctx.channel.send(ctx.msg.chatId, { card: projectsCard(projects, page) }, { replyTo: ctx.msg.messageId });
+}
+
+async function handleProject(args: string, ctx: CommandContext): Promise<void> {
+  const [action, ...rest] = args.trim().split(/\s+/);
+  const projectKey = rest.join(' ');
+  if (!ctx.projectCatalog || !ctx.projectBindings) {
+    await reply(ctx, '当前 Bridge 尚未启用项目模式，请先在配置中将 agentBackend 设置为 codex。');
+    return;
+  }
+  if (action === 'sessions') {
+    const project = await ctx.projectCatalog.get(projectKey);
+    if (!project) return reply(ctx, '没有找到这个项目，请重新打开项目列表。');
+    const existing = ctx.projectBindings.projectFor(project.projectKey);
+    if (existing?.chatId && existing.chatId !== ctx.msg.chatId) {
+      await reply(ctx, '这个项目已经绑定项目群，请直接到项目群里点击“查看会话”。');
+      return;
+    }
+    await openProject(project.projectKey, ctx);
+    return;
+  }
+  if (action === 'status') {
+    const current = ctx.projectBindings.findProjectByChat(ctx.msg.chatId);
+    const project = projectKey ? await ctx.projectCatalog.get(projectKey) : current;
+    if (!project) return reply(ctx, '没有找到这个项目，请刷新项目列表。');
+    const binding = ctx.projectBindings.projectFor(project.projectKey);
+    const topicCount = ctx.projectBindings.topicsForProject(project.projectKey).length;
+    await reply(ctx, `📁 **${project.name}**\n路径：\`${project.cwd}\`\n项目群：${binding?.chatId ? '已创建' : '未创建'}\n已绑定话题：${topicCount} 个`);
+    return;
+  }
+  if (action !== 'open' || !projectKey) return handleProjects('', ctx);
+  await openProject(projectKey, ctx);
+}
+
+async function openProject(projectKey: string, ctx: CommandContext): Promise<void> {
+  if (!ctx.projectCatalog || !ctx.projectBindings) return;
+  const project = await ctx.projectCatalog.get(projectKey);
+  if (!project) return reply(ctx, '没有找到这个项目，请刷新后重试。');
+  const current = ctx.projectBindings.projectFor(projectKey);
+  if (current?.chatId) {
+    await reply(ctx, '这个项目已经绑定项目群。请到项目群里点击“查看会话”。');
+    return;
+  }
+  try {
+    const created = await createBoundChat({
+      channel: ctx.channel,
+      name: `Codex · ${project.name}`,
+      description: `Codex 项目：${project.name}\n路径：${project.cwd}`,
+      inviteOpenId: ctx.msg.senderId,
+      threadMode: true,
+    });
+    ctx.projectBindings.registerProjects?.([project]);
+    await ctx.projectBindings.bindProject(projectKey, created.chatId);
+    await ctx.channel.send(created.chatId, { card: projectWelcomeCard(project) });
+    await reply(ctx, `✅ 已创建项目群：**${project.name}**\n请到新群里点击“查看会话”。`);
+  } catch (err) {
+    await reply(ctx, `创建项目群失败：${err instanceof Error ? err.message : String(err)}\n请确认应用有创建群和话题群权限。`);
+  }
+}
+
+async function handleSessions(_args: string, ctx: CommandContext): Promise<void> {
+  if (!ctx.projectBindings || !ctx.agent.listSessions) {
+    await reply(ctx, '当前 Bridge 尚未启用 Codex 项目模式。');
+    return;
+  }
+  const project = ctx.projectBindings.findProjectByChat(ctx.msg.chatId);
+  if (!project) {
+    await ctx.channel.send(ctx.msg.chatId, { card: welcomeCard() }, { replyTo: ctx.msg.messageId });
+    return;
+  }
+  const rawArgs = _args.trim();
+  const cursor = rawArgs.startsWith('page ') ? rawArgs.slice(5).trim() : undefined;
+  const page = ctx.agent.listSessionPage
+    ? await ctx.agent.listSessionPage(project.cwd, cursor)
+    : { sessions: await ctx.agent.listSessions(project.cwd) };
+  await ctx.channel.send(ctx.msg.chatId, { card: sessionsCard(project.name, page.sessions, page.nextCursor) }, { replyTo: ctx.msg.messageId });
+}
+
+async function handleSession(args: string, ctx: CommandContext): Promise<void> {
+  if (!ctx.projectBindings || !ctx.agent.createSession || !ctx.agent.listSessions) {
+    await reply(ctx, '当前 Bridge 尚未启用 Codex 项目模式。');
+    return;
+  }
+  const project = ctx.projectBindings.findProjectByChat(ctx.msg.chatId);
+  if (!project) return reply(ctx, '当前群还没有绑定项目，请先从“选择项目”开始。');
+  const action = args.trim();
+  let threadId: string;
+  let title: string;
+  if (action === 'new' || action === '') {
+    const created = await ctx.agent.createSession(project.cwd);
+    threadId = created.threadId;
+    title = created.name ?? '新建会话';
+  } else if (action.startsWith('open ')) {
+    threadId = action.slice(5).trim();
+    const found = (await ctx.agent.listSessions(project.cwd)).find((session) => session.threadId === threadId);
+    if (!found) return reply(ctx, '没有找到这个会话，请刷新会话列表。');
+    title = found.name ?? found.preview.slice(0, 40) ?? '未命名会话';
+  } else if (action.startsWith('detail ')) {
+    const threadIdToShow = action.slice(7).trim();
+    const found = (await ctx.agent.listSessions(project.cwd)).find((session) => session.threadId === threadIdToShow);
+    return reply(ctx, found ? `会话：**${found.name ?? '未命名'}**\n最近内容：${found.preview}\n状态：${found.status}` : '没有找到这个会话。');
+  } else if (action.startsWith('archive ')) {
+    const threadIdToArchive = action.slice(8).trim();
+    const found = (await ctx.agent.listSessions(project.cwd)).find((session) => session.threadId === threadIdToArchive);
+    if (!found) return reply(ctx, '没有找到这个会话，请刷新会话列表。');
+    if (!ctx.agent.archiveSession) return reply(ctx, '当前 Codex 版本不支持归档会话。');
+    await ctx.agent.archiveSession(threadIdToArchive);
+    await reply(ctx, '✅ 会话已归档。');
+    return handleSessions('', ctx);
+  } else {
+    return handleSessions('', ctx);
+  }
+
+  const existing = ctx.projectBindings.findTopicByThread(threadId);
+  if (existing) return reply(ctx, '这个会话已经绑定了一个话题，请使用原话题继续。');
+  const root = await ctx.channel.send(ctx.msg.chatId, { card: topicWelcomeCard(project.name, title, project.cwd) });
+  await ctx.projectBindings.bindTopic({
+    chatId: ctx.msg.chatId,
+    topicId: root.messageId,
+    projectKey: project.projectKey,
+    codexThreadId: threadId,
+    createdBy: ctx.msg.senderId,
+    updatedAt: Date.now(),
+  });
+  await reply(ctx, '✅ 已创建话题，请到新话题里直接输入需求。');
 }
 
 async function handleNewChat(rawName: string, ctx: CommandContext): Promise<void> {
@@ -342,6 +510,24 @@ async function handleWsRemove(name: string, ctx: CommandContext): Promise<void> 
 }
 
 async function handleStatus(_args: string, ctx: CommandContext): Promise<void> {
+  const project = ctx.projectBindings?.findProjectByChat(ctx.msg.chatId);
+  if (project) {
+    const topic = ctx.msg.threadId ? ctx.projectBindings?.findTopic(ctx.msg.chatId, ctx.msg.threadId) : undefined;
+    await ctx.channel.send(ctx.msg.chatId, {
+      card: statusCard({
+        cwd: project.cwd,
+        sessionId: topic?.codexThreadId,
+        sessionStale: false,
+        agentName: ctx.agent.displayName,
+        scope: 'project',
+        chatMode: ctx.chatMode,
+        projectName: project.name,
+        sessionTitle: topic ? '已绑定会话' : undefined,
+        hideInternalIds: true,
+      }),
+    }, { replyTo: ctx.msg.messageId });
+    return;
+  }
   const cwd = ctx.workspaces.cwdFor(ctx.scope) ?? homedir();
   const sess = ctx.sessions.getRaw(ctx.scope);
   const card = statusCard({

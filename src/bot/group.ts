@@ -5,6 +5,7 @@ export interface CreateBoundChatOptions {
   name: string;
   inviteOpenId: string;
   description?: string;
+  threadMode?: boolean;
 }
 
 export interface CreatedChat {
@@ -24,6 +25,7 @@ export async function createBoundChat(opts: CreateBoundChatOptions): Promise<Cre
       description,
       chat_mode: 'group',
       chat_type: 'private',
+      ...(opts.threadMode ? { group_message_type: 'thread' } : {}),
       user_id_list: [inviteOpenId],
     },
     params: {

@@ -8,6 +8,7 @@ export const paths = {
   cacheDir: appDir,
   configFile: join(appDir, 'config.json'),
   sessionsFile: join(appDir, 'sessions.json'),
+  projectBindingsFile: join(appDir, 'project-bindings.json'),
   workspacesFile: join(appDir, 'workspaces.json'),
   processesFile: join(appDir, 'processes.json'),
   secretsFile: join(appDir, 'secrets.enc'),
