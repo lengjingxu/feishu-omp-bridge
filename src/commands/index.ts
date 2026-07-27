@@ -347,7 +347,25 @@ async function handleSession(args: string, ctx: CommandContext): Promise<void> {
   } else if (action.startsWith('detail ')) {
     const threadIdToShow = action.slice(7).trim();
     const found = (await ctx.agent.listSessions(project.cwd)).find((session) => session.threadId === threadIdToShow);
-    return reply(ctx, found ? `会话：**${found.name ?? '未命名'}**\n最近内容：${found.preview}\n状态：${found.status}` : '没有找到这个会话。');
+    if (!found) return reply(ctx, '没有找到这个会话。');
+    if (!ctx.agent.readSession) {
+      return reply(ctx, `会话：**${found.name ?? '未命名'}**\n最近内容：${found.preview}\n状态：${sessionStatusText(found.status, found.activeFlags)}`);
+    }
+    const detail = await ctx.agent.readSession(threadIdToShow);
+    const activity = detail.recentActivity.length > 0
+      ? detail.recentActivity.map((item) => `- ${item.kind}：${truncateText(item.text, 160)}`).join('\n')
+      : '暂无可展示的历史内容。';
+    return reply(ctx, [
+      `会话：**${detail.name ?? '未命名'}**`,
+      `最近内容：${detail.preview}`,
+      `状态：${sessionStatusText(detail.status, detail.activeFlags)}`,
+      `来源：${detail.source ?? '未知'}`,
+      `工作目录：\`${detail.cwd}\``,
+      `历史轮次：${detail.turnCount}`,
+      '',
+      '**最近活动**',
+      activity,
+    ].join('\n'));
   } else if (action.startsWith('archive ')) {
     const threadIdToArchive = action.slice(8).trim();
     const found = (await ctx.agent.listSessions(project.cwd)).find((session) => session.threadId === threadIdToArchive);
@@ -372,6 +390,18 @@ async function handleSession(args: string, ctx: CommandContext): Promise<void> {
     updatedAt: Date.now(),
   });
   await reply(ctx, '✅ 已创建话题，请到新话题里直接输入需求。');
+}
+
+function sessionStatusText(status: string, activeFlags: string[] | undefined): string {
+  if (activeFlags?.includes('waitingOnApproval')) return '等待确认';
+  if (activeFlags?.includes('waitingOnUserInput')) return '等待输入';
+  if (status === 'active') return '执行中';
+  if (status === 'archived') return '已归档';
+  return '空闲';
+}
+
+function truncateText(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, max)}…` : text;
 }
 
 async function handleNewChat(rawName: string, ctx: CommandContext): Promise<void> {

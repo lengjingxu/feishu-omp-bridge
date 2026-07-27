@@ -12,14 +12,23 @@ export interface ProjectCatalog {
 export class LocalProjectCatalog implements ProjectCatalog {
   private readonly cfg: AppConfig;
   private readonly hostId: string;
+  private readonly discoverRoots?: () => Promise<string[]>;
 
-  constructor(cfg: AppConfig, hostId = 'local') {
+  constructor(cfg: AppConfig, hostId = 'local', discoverRoots?: () => Promise<string[]>) {
     this.cfg = cfg;
     this.hostId = hostId;
+    this.discoverRoots = discoverRoots;
   }
 
   async list(): Promise<Project[]> {
-    const roots = getProjectRoots(this.cfg);
+    const roots = new Set(getProjectRoots(this.cfg));
+    if (this.discoverRoots) {
+      try {
+        for (const root of await this.discoverRoots()) roots.add(root);
+      } catch (err) {
+        log.warn('project', 'history-discovery-failed', { err: String(err) });
+      }
+    }
     const projects: Project[] = [];
     for (const root of roots) {
       const project = await this.fromRoot(root);

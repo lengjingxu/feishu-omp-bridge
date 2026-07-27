@@ -19,6 +19,7 @@ for await (const line of rl) {
   if (msg.method === 'thread/list') send({ id: msg.id, result: { data: [{ id: 'thread-existing', name: '旧会话', preview: '修复卡片', cwd: '/tmp/project', updatedAt: 10, status: { type: 'idle' } }], nextCursor: msg.params.cursor ? null : 'cursor-2', backwardsCursor: null } });
   if (msg.method === 'thread/start') send({ id: msg.id, result: { thread: { id: 'thread-new', name: null, preview: '', cwd: '/tmp/project' } } });
   if (msg.method === 'thread/resume') send({ id: msg.id, result: { thread: { id: msg.params.threadId, cwd: '/tmp/project' } } });
+  if (msg.method === 'thread/read') send({ id: msg.id, result: { thread: { id: msg.params.threadId, sessionId: 'session-1', name: '详情会话', preview: '查看详情', cwd: '/tmp/project', updatedAt: 20, status: { type: 'active', activeFlags: ['waitingOnUserInput'] }, source: 'vscode', turns: [{ items: [{ type: 'userMessage', content: [{ type: 'text', text: '请查看', text_elements: [] }] }, { type: 'agentMessage', text: '正在查看' }, { type: 'commandExecution', command: 'pnpm test' }] }] } } });
   if (msg.method === 'turn/start') {
     send({ id: msg.id, result: { turn: { id: 'turn-1' } } });
     send({ method: 'item/agentMessage/delta', params: { threadId: 'thread-new', turnId: 'turn-1', itemId: 'item-1', delta: '完成' } });
@@ -51,6 +52,17 @@ describe('CodexAdapter', () => {
       updatedAt: 10_000,
     }]);
     await expect(adapter.listSessionPage?.('/tmp/project')).resolves.toMatchObject({ nextCursor: 'cursor-2' });
+    await expect(adapter.listProjectRoots?.()).resolves.toEqual(['/tmp/project']);
+    await expect(adapter.readSession?.('thread-existing')).resolves.toMatchObject({
+      sessionId: 'session-1',
+      source: 'vscode',
+      turnCount: 1,
+      recentActivity: [
+        { kind: '用户', text: '请查看' },
+        { kind: '助手', text: '正在查看' },
+        { kind: '工具', text: 'pnpm test' },
+      ],
+    });
     await expect(adapter.archiveSession?.('thread-existing')).resolves.toBeUndefined();
     await adapter.close();
   });

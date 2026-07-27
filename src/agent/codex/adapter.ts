@@ -1,7 +1,7 @@
 import type { AgentAdapter, AgentEvent, AgentRun, AgentRunOptions, AgentUiResponse } from '../types';
 import { log } from '../../core/logger';
 import { CodexAppServerClient, type JsonRpcNotification, type JsonRpcServerRequest } from './app-server';
-import type { SessionPage, SessionSummary } from '../../project/types';
+import type { SessionActivity, SessionDetail, SessionPage, SessionSummary } from '../../project/types';
 
 interface QueueValue<T> { value?: T; done?: boolean }
 
@@ -71,17 +71,57 @@ export class CodexAdapter implements AgentAdapter {
       cwd,
       limit: 50,
       archived: false,
+      sourceKinds: ['cli', 'vscode', 'appServer'],
+      sortKey: 'updated_at',
+      sortDirection: 'desc',
+      useStateDbOnly: true,
       ...(cursor ? { cursor } : {}),
     });
-    const sessions = (response.data ?? []).map((thread) => ({
-      threadId: String(thread.id ?? ''),
-      name: typeof thread.name === 'string' ? thread.name : undefined,
-      preview: typeof thread.preview === 'string' ? thread.preview : '暂无摘要',
-      cwd: typeof thread.cwd === 'string' ? thread.cwd : cwd,
-      status: mapThreadStatus(thread.status),
-      updatedAt: typeof thread.updatedAt === 'number' ? thread.updatedAt * 1000 : Date.now(),
-    })).filter((session) => session.threadId !== '');
+    const sessions = (response.data ?? []).map((thread) => mapThread(thread, cwd)).filter((session): session is SessionSummary => session !== undefined);
     return { sessions, ...(response.nextCursor ? { nextCursor: response.nextCursor } : {}) };
+  }
+
+  async readSession(threadId: string): Promise<SessionDetail> {
+    const response = await this.client.request<{ thread?: Record<string, unknown> }>('thread/read', {
+      threadId,
+      includeTurns: true,
+    });
+    const thread = response.thread;
+    if (!thread) throw new Error('Codex app-server did not return the session');
+    const summary = mapThread(thread, typeof thread.cwd === 'string' ? thread.cwd : '');
+    if (!summary) throw new Error('Codex app-server returned an invalid session');
+    const turns = Array.isArray(thread.turns) ? thread.turns : [];
+    const recentActivity = turns.flatMap((turn) => {
+      const items = turn && typeof turn === 'object' && Array.isArray((turn as { items?: unknown[] }).items)
+        ? (turn as { items: unknown[] }).items
+        : [];
+      return items.map(summarizeActivity).filter((item): item is SessionActivity => item !== undefined);
+    }).slice(-8);
+    return { ...summary, turnCount: turns.length, recentActivity };
+  }
+
+  async listProjectRoots(): Promise<string[]> {
+    const roots = new Set<string>();
+    let cursor: string | undefined;
+    do {
+      const response = await this.client.request<{
+        data?: Array<Record<string, unknown>>;
+        nextCursor?: string | null;
+      }>('thread/list', {
+        limit: 100,
+        archived: false,
+        sourceKinds: ['cli', 'vscode', 'appServer'],
+        sortKey: 'updated_at',
+        sortDirection: 'desc',
+        useStateDbOnly: true,
+        ...(cursor ? { cursor } : {}),
+      });
+      for (const thread of response.data ?? []) {
+        if (typeof thread.cwd === 'string' && thread.cwd.trim()) roots.add(thread.cwd);
+      }
+      cursor = response.nextCursor ?? undefined;
+    } while (cursor);
+    return [...roots];
   }
 
   async createSession(cwd: string): Promise<SessionSummary> {
@@ -127,9 +167,20 @@ export class CodexAdapter implements AgentAdapter {
 
     const handleNotification = (message: JsonRpcNotification): void => {
       const params = message.params ?? {};
+      if (message.method === 'error') {
+        const error = params.error as { message?: string } | undefined;
+        if (!params.threadId || params.threadId === threadId) {
+          queue.push({ type: 'error', message: error?.message ?? 'Codex app-server 返回错误' });
+        }
+        return;
+      }
       if (message.method === 'turn/started') {
         const turn = params.turn as { id?: string } | undefined;
         if (params.threadId === threadId && turn?.id) turnId = turn.id;
+        return;
+      }
+      if (message.method === 'thread/name/updated' && params.threadId === threadId) {
+        if (typeof params.threadName === 'string') queue.push({ type: 'ui_title', title: params.threadName });
         return;
       }
       if (params.threadId !== threadId) return;
@@ -139,6 +190,39 @@ export class CodexAdapter implements AgentAdapter {
       } else if (message.method === 'item/reasoning/summaryTextDelta') {
         const delta = typeof params.delta === 'string' ? params.delta : '';
         if (delta) queue.push({ type: 'thinking', delta });
+      } else if (message.method === 'item/reasoning/textDelta') {
+        const delta = typeof params.delta === 'string' ? params.delta : '';
+        if (delta) queue.push({ type: 'thinking', delta });
+      } else if (message.method === 'item/plan/delta') {
+        const delta = typeof params.delta === 'string' ? params.delta : '';
+        if (delta) queue.push({ type: 'thinking', delta: `\n${delta}` });
+      } else if (message.method === 'turn/plan/updated') {
+        const plan = Array.isArray(params.plan) ? params.plan : [];
+        const lines = plan.map((step) => {
+          const value = step as { step?: unknown; status?: unknown };
+          const status = value.status === 'completed' ? '✅' : value.status === 'inProgress' ? '🔄' : '⬜';
+          return `${status} ${String(value.step ?? '')}`.trim();
+        }).filter((line) => line.length > 2);
+        queue.push({ type: 'ui_widget', widget: { key: '执行计划', lines, placement: 'aboveEditor' } });
+      } else if (message.method === 'thread/status/changed') {
+        const status = params.status as { type?: unknown; activeFlags?: unknown } | undefined;
+        const flags = Array.isArray(status?.activeFlags) ? status.activeFlags.join('、') : '';
+        const text = status?.type === 'active'
+          ? flags || '执行中'
+          : status?.type === 'idle' ? '空闲' : String(status?.type ?? '未知');
+        queue.push({ type: 'ui_status', status: { key: '会话状态', text } });
+      } else if (message.method === 'turn/diff/updated') {
+        const diff = typeof params.diff === 'string' ? params.diff : '';
+        queue.push({ type: 'ui_status', status: { key: '代码改动', text: diff ? `已生成改动（${diff.split('\n').length} 行）` : '暂无改动' } });
+      } else if (message.method === 'thread/tokenUsage/updated') {
+        const usage = params.tokenUsage as { last?: { inputTokens?: number; outputTokens?: number } } | undefined;
+        queue.push({ type: 'usage', inputTokens: usage?.last?.inputTokens, outputTokens: usage?.last?.outputTokens });
+      } else if (message.method === 'model/rerouted') {
+        const from = typeof params.fromModel === 'string' ? params.fromModel : '';
+        const to = typeof params.toModel === 'string' ? params.toModel : '';
+        queue.push({ type: 'ui_notice', message: `模型已切换：${from} → ${to}`, level: 'info' });
+      } else if (message.method === 'thread/compacted') {
+        queue.push({ type: 'ui_notice', message: 'Codex 已压缩上下文，继续保持当前会话。', level: 'info' });
       } else if (message.method === 'item/started') {
         const item = params.item as { id?: string; type?: string; command?: string; cwd?: string } | undefined;
         if (!item?.id) return;
@@ -150,6 +234,10 @@ export class CodexAdapter implements AgentAdapter {
             input: { command: item.command, cwd: item.cwd },
           });
         }
+      } else if (message.method === 'item/commandExecution/outputDelta' || message.method === 'item/fileChange/outputDelta' || message.method === 'item/mcpToolCall/progress') {
+        const itemId = typeof params.itemId === 'string' ? params.itemId : '';
+        const delta = typeof params.delta === 'string' ? params.delta : typeof params.message === 'string' ? params.message : '';
+        if (itemId && delta) queue.push({ type: 'tool_update', id: itemId, output: delta });
       } else if (message.method === 'item/completed') {
         const item = params.item as { id?: string; type?: string; command?: string; aggregatedOutput?: string | null; exitCode?: number | null; status?: string } | undefined;
         if (!item?.id) return;
@@ -269,4 +357,49 @@ export class CodexAdapter implements AgentAdapter {
 function mapThreadStatus(value: unknown): SessionSummary['status'] {
   if (value && typeof value === 'object' && (value as { type?: unknown }).type === 'active') return 'active';
   return 'idle';
+}
+
+function mapThread(thread: Record<string, unknown>, fallbackCwd: string): SessionSummary | undefined {
+  const threadId = typeof thread.id === 'string' ? thread.id : '';
+  if (!threadId) return undefined;
+  const status = thread.status && typeof thread.status === 'object' ? thread.status as { type?: unknown; activeFlags?: unknown } : undefined;
+  const activeFlags = Array.isArray(status?.activeFlags) ? status.activeFlags.filter((flag): flag is string => typeof flag === 'string') : undefined;
+  const gitInfo = thread.gitInfo && typeof thread.gitInfo === 'object' ? thread.gitInfo as { branch?: unknown } : undefined;
+  return {
+    threadId,
+    ...(typeof thread.sessionId === 'string' ? { sessionId: thread.sessionId } : {}),
+    ...(typeof thread.forkedFromId === 'string' ? { forkedFromId: thread.forkedFromId } : {}),
+    ...(typeof thread.parentThreadId === 'string' ? { parentThreadId: thread.parentThreadId } : {}),
+    ...(typeof thread.name === 'string' ? { name: thread.name } : {}),
+    preview: typeof thread.preview === 'string' ? thread.preview : '暂无摘要',
+    cwd: typeof thread.cwd === 'string' ? thread.cwd : fallbackCwd,
+    status: mapThreadStatus(thread.status),
+    ...(activeFlags && activeFlags.length > 0 ? { activeFlags } : {}),
+    ...(typeof thread.source === 'string' ? { source: thread.source } : {}),
+    ...(typeof gitInfo?.branch === 'string' ? { gitBranch: gitInfo.branch } : {}),
+    updatedAt: typeof thread.updatedAt === 'number' ? thread.updatedAt * 1000 : Date.now(),
+  };
+}
+
+function summarizeActivity(item: unknown): SessionActivity | undefined {
+  if (!item || typeof item !== 'object') return undefined;
+  const value = item as Record<string, unknown>;
+  switch (value.type) {
+    case 'userMessage': {
+      const content = Array.isArray(value.content) ? value.content : [];
+      const text = content.filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === 'object' && (entry as { type?: unknown }).type === 'text')
+        .map((entry) => typeof entry.text === 'string' ? entry.text : '').filter(Boolean).join('\n');
+      return text ? { kind: '用户', text } : undefined;
+    }
+    case 'agentMessage':
+      return typeof value.text === 'string' && value.text ? { kind: '助手', text: value.text } : undefined;
+    case 'plan':
+      return typeof value.text === 'string' && value.text ? { kind: '计划', text: value.text } : undefined;
+    case 'commandExecution':
+      return typeof value.command === 'string' && value.command ? { kind: '工具', text: value.command } : undefined;
+    case 'fileChange':
+      return { kind: '文件', text: '发生文件修改' };
+    default:
+      return undefined;
+  }
 }

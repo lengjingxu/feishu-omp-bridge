@@ -85,15 +85,32 @@ export function projectWelcomeCard(info: ProjectWelcomeInfo): object {
   ]);
 }
 
-export interface SessionCardInfo { threadId: string; name?: string; preview: string; status: string; updatedAt: number; }
+export interface SessionCardInfo {
+  threadId: string;
+  name?: string;
+  preview: string;
+  status: string;
+  activeFlags?: string[];
+  source?: string;
+  forkedFromId?: string;
+  gitBranch?: string;
+  updatedAt: number;
+}
 
 export function sessionsCard(projectName: string, sessions: SessionCardInfo[], nextCursor?: string): object {
   const elements: object[] = [divMd(`项目：**${escapeMd(projectName)}**\n选择一个会话，Bridge 会自动为它创建一个飞书话题。`)];
   if (sessions.length === 0) elements.push(HR, divMd('暂无可恢复的会话。可以直接新建一个。'));
   for (const session of sessions) {
     const title = session.name?.trim() || session.preview.slice(0, 40) || '未命名会话';
-    const status = session.status === 'active' ? '执行中' : '空闲';
-    elements.push(HR, divMd(`**${escapeMd(title)}**\n${escapeMd(session.preview.slice(0, 120))}\n状态：${status} · ${formatRelative(session.updatedAt)}`));
+    const status = sessionStatusText(session.status, session.activeFlags);
+    const metadata = [
+      `状态：${status}`,
+      formatRelative(session.updatedAt),
+      session.source ? `来源：${sourceText(session.source)}` : '',
+      session.forkedFromId ? '分支会话' : '',
+      session.gitBranch ? `分支：${escapeMd(session.gitBranch)}` : '',
+    ].filter(Boolean).join(' · ');
+    elements.push(HR, divMd(`**${escapeMd(title)}**\n${escapeMd(session.preview.slice(0, 120))}\n${metadata}`));
     elements.push(actions([
       { text: '继续此会话', value: { cmd: 'session.open', arg: session.threadId }, style: 'primary' },
       { text: '查看详情', value: { cmd: 'session.detail', arg: session.threadId } },
@@ -107,6 +124,23 @@ export function sessionsCard(projectName: string, sessions: SessionCardInfo[], n
   if (nextCursor) footer.splice(1, 0, { text: '加载更多', value: { cmd: 'sessions.page', arg: nextCursor } });
   elements.push(HR, actions(footer));
   return shell('📚 Codex 会话', elements);
+}
+
+function sessionStatusText(status: string, activeFlags: string[] | undefined): string {
+  if (activeFlags?.includes('waitingOnApproval')) return '等待确认';
+  if (activeFlags?.includes('waitingOnUserInput')) return '等待输入';
+  if (status === 'active') return '执行中';
+  if (status === 'archived') return '已归档';
+  return '空闲';
+}
+
+function sourceText(source: string): string {
+  if (source === 'cli') return 'Codex 命令行';
+  if (source === 'vscode') return 'VS Code';
+  if (source === 'appServer') return 'Codex 应用服务';
+  if (source === 'exec') return '自动执行';
+  if (source === 'subAgent') return '子代理';
+  return source;
 }
 
 export function topicWelcomeCard(projectName: string, sessionTitle: string, cwd: string): object {

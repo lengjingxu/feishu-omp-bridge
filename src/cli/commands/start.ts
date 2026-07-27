@@ -2,6 +2,7 @@ import dns from 'node:dns';
 import { createInterface } from 'node:readline';
 import pkg from '../../../package.json';
 import { CodexAdapter, OmpAdapter } from '../../agent';
+import type { AgentAdapter } from '../../agent/types';
 import { startChannel, type BridgeChannel } from '../../bot/channel';
 import { runRegistrationWizard } from '../../bot/wizard';
 import type { Controls } from '../../commands';
@@ -87,7 +88,7 @@ export async function runStart(opts: StartOptions): Promise<void> {
 
   await preFlightChecks({ skipCheckLarkCli: opts.skipCheckLarkCli });
 
-  const agent = getAgentBackend(cfg) === 'codex'
+  const agent: AgentAdapter = getAgentBackend(cfg) === 'codex'
     ? new CodexAdapter({ binary: getCodexAppServerBinary(cfg) })
     : new OmpAdapter({
       binary: getOmpBinary(cfg),
@@ -104,7 +105,11 @@ export async function runStart(opts: StartOptions): Promise<void> {
   await sessions.load();
   const workspaces = new WorkspaceStore();
   await workspaces.load();
-  const projectCatalog = new LocalProjectCatalog(cfg);
+  const projectCatalog = new LocalProjectCatalog(
+    cfg,
+    'local',
+    agent.listProjectRoots ? () => agent.listProjectRoots!() : undefined,
+  );
   const projectBindings = new JsonProjectBindingStore();
   await projectBindings.load();
   projectBindings.registerProjects?.(await projectCatalog.list());

@@ -21,6 +21,10 @@ describe('project-first Feishu cards', () => {
     expect(sessions).toContain('继续此会话');
     expect(sessions).toContain('加载更多');
     expect(sessions).toContain('归档');
+    const metadata = text(sessionsCard('示例项目', [{ threadId: 'thread-2', preview: '等待输入', status: 'active', activeFlags: ['waitingOnUserInput'], source: 'vscode', forkedFromId: 'thread-0', updatedAt: Date.now() }]));
+    expect(metadata).toContain('等待输入');
+    expect(metadata).toContain('VS Code');
+    expect(metadata).toContain('分支会话');
   });
 
   it('renders project and topic context without exposing internal ids', () => {

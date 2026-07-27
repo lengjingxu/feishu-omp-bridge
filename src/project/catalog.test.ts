@@ -19,4 +19,13 @@ describe('LocalProjectCatalog', () => {
     expect(projects[0]?.name).toBe('demo');
     expect(projects[0]?.projectKey).toBe(`local::${await realpath(nested)}`);
   });
+
+  it('merges project directories discovered from Codex history', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'feishu-project-history-'));
+    const nested = join(root, 'history-project');
+    await mkdir(nested);
+    const projects = await new LocalProjectCatalog(cfg([]), 'local', async () => [nested, nested]).list();
+    expect(projects).toHaveLength(1);
+    expect(projects[0]?.cwd).toBe(await realpath(nested));
+  });
 });

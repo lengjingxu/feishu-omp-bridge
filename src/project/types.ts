@@ -8,16 +8,32 @@ export interface Project {
 
 export interface SessionSummary {
   threadId: string;
+  sessionId?: string;
+  forkedFromId?: string;
+  parentThreadId?: string;
   name?: string;
   preview: string;
   cwd: string;
   status: 'idle' | 'active' | 'archived';
+  activeFlags?: string[];
+  source?: string;
+  gitBranch?: string;
   updatedAt: number;
 }
 
 export interface SessionPage {
   sessions: SessionSummary[];
   nextCursor?: string;
+}
+
+export interface SessionActivity {
+  kind: '用户' | '助手' | '计划' | '工具' | '文件';
+  text: string;
+}
+
+export interface SessionDetail extends SessionSummary {
+  turnCount: number;
+  recentActivity: SessionActivity[];
 }
 
 export interface TopicBinding {
