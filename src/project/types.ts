@@ -49,6 +49,7 @@ export interface ProjectBindingStore {
   registerProjects?(projects: Project[]): void;
   bindProject(projectKey: string, chatId: string): Promise<void>;
   bindTopic(binding: TopicBinding): Promise<void>;
+  updateTopicSession(chatId: string, topicId: string, codexThreadId: string): Promise<void>;
   findProjectByChat(chatId: string): Project | undefined;
   findTopic(chatId: string, topicId: string): TopicBinding | undefined;
   findTopicByThread(threadId: string): TopicBinding | undefined;

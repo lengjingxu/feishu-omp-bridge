@@ -18,7 +18,10 @@ for await (const line of rl) {
   if (msg.method === 'initialize') send({ id: msg.id, result: {} });
   if (msg.method === 'thread/list') send({ id: msg.id, result: { data: [{ id: 'thread-existing', name: '旧会话', preview: '修复卡片', cwd: '/tmp/project', updatedAt: 10, status: { type: 'idle' } }], nextCursor: msg.params.cursor ? null : 'cursor-2', backwardsCursor: null } });
   if (msg.method === 'thread/start') send({ id: msg.id, result: { thread: { id: 'thread-new', name: null, preview: '', cwd: '/tmp/project' } } });
-  if (msg.method === 'thread/resume') send({ id: msg.id, result: { thread: { id: msg.params.threadId, cwd: '/tmp/project' } } });
+  if (msg.method === 'thread/resume') {
+    if (msg.params.threadId === 'missing-rollout') send({ id: msg.id, error: { code: -32000, message: 'no rollout found for thread id missing-rollout' } });
+    else send({ id: msg.id, result: { thread: { id: msg.params.threadId, cwd: '/tmp/project' } } });
+  }
   if (msg.method === 'thread/read') send({ id: msg.id, result: { thread: { id: msg.params.threadId, sessionId: 'session-1', name: '详情会话', preview: '查看详情', cwd: '/tmp/project', updatedAt: 20, status: { type: 'active', activeFlags: ['waitingOnUserInput'] }, source: 'vscode', turns: [{ items: [{ type: 'userMessage', content: [{ type: 'text', text: '请查看', text_elements: [] }] }, { type: 'agentMessage', text: '正在查看' }, { type: 'commandExecution', command: 'pnpm test' }] }] } } });
   if (msg.method === 'turn/start') {
     send({ id: msg.id, result: { turn: { id: 'turn-1' } } });
@@ -71,6 +74,18 @@ describe('CodexAdapter', () => {
     const adapter = new CodexAdapter({ binary: await fakeCodex() });
     const run = adapter.run({ prompt: '请测试', cwd: '/tmp/project' });
     await expect(collect(run.events)).resolves.toEqual([
+      { type: 'system', sessionId: 'thread-new', cwd: '/tmp/project', model: undefined },
+      { type: 'text', delta: '完成' },
+      { type: 'done', sessionId: 'thread-new' },
+    ]);
+    await adapter.close();
+  });
+
+  it('starts a replacement thread when an empty thread has no rollout to resume', async () => {
+    const adapter = new CodexAdapter({ binary: await fakeCodex() });
+    const run = adapter.run({ prompt: '继续处理', sessionId: 'missing-rollout', cwd: '/tmp/project' });
+    await expect(collect(run.events)).resolves.toEqual([
+      { type: 'ui_notice', message: '原 Codex 会话没有可恢复的执行记录，已自动新建会话。', level: 'warning' },
       { type: 'system', sessionId: 'thread-new', cwd: '/tmp/project', model: undefined },
       { type: 'text', delta: '完成' },
       { type: 'done', sessionId: 'thread-new' },

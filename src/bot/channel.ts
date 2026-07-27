@@ -523,6 +523,7 @@ interface RunBatchDeps {
 interface AgentStreamHooks {
   onUiRequest(request: AgentUiRequest): Promise<void>;
   onUiCancel(targetId: string): Promise<void>;
+  onSystem?(sessionId: string, cwd?: string): Promise<void>;
 }
 
 async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
@@ -655,6 +656,15 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
 
   const uiCards = new Map<string, { messageId: string; title: string }>();
   const uiHooks: AgentStreamHooks = {
+    async onSystem(sessionId) {
+      if (!topicBinding || sessionId === topicBinding.codexThreadId || !projectBindings) return;
+      await projectBindings.updateTopicSession(topicBinding.chatId, topicBinding.topicId, sessionId);
+      log.info('session', 'topic-rebound', {
+        topicId: topicBinding.topicId,
+        previousSessionId: topicBinding.codexThreadId,
+        sessionId,
+      });
+    },
     async onUiRequest(request) {
       try {
         const existing = uiCards.get(request.id);
@@ -828,6 +838,7 @@ async function processAgentStream(
       if (evt.type === 'system') {
         if (evt.sessionId) {
           const effectiveCwd = evt.cwd ?? cwd;
+          await hooks?.onSystem?.(evt.sessionId, effectiveCwd);
           sessions.set(scope, evt.sessionId, effectiveCwd);
           log.info('session', 'set', { sessionId: evt.sessionId });
         }

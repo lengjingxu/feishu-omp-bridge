@@ -293,9 +293,18 @@ export class CodexAdapter implements AgentAdapter {
         await this.client.ensureStarted();
         unsubscribe = this.client.onNotification(handleNotification);
         unsubscribeRequests = this.client.onServerRequest(handleServerRequest);
-        const thread = opts.sessionId
-          ? await client.request<{ id?: string; thread?: { id?: string } }>('thread/resume', { threadId: opts.sessionId, ...(opts.cwd ? { cwd: opts.cwd } : {}) })
-          : await client.request<{ id?: string; thread?: { id?: string } }>('thread/start', { ...(opts.cwd ? { cwd: opts.cwd } : {}) });
+        let thread: { id?: string; thread?: { id?: string } };
+        if (opts.sessionId) {
+          try {
+            thread = await client.request('thread/resume', { threadId: opts.sessionId, ...(opts.cwd ? { cwd: opts.cwd } : {}) });
+          } catch (err) {
+            if (!isMissingRolloutError(err)) throw err;
+            queue.push({ type: 'ui_notice', message: '原 Codex 会话没有可恢复的执行记录，已自动新建会话。', level: 'warning' });
+            thread = await client.request('thread/start', { ...(opts.cwd ? { cwd: opts.cwd } : {}) });
+          }
+        } else {
+          thread = await client.request('thread/start', { ...(opts.cwd ? { cwd: opts.cwd } : {}) });
+        }
         threadId = thread.thread?.id ?? thread.id ?? opts.sessionId;
         if (!threadId) throw new Error('Codex app-server did not return a thread id');
         queue.push({ type: 'system', sessionId: threadId, cwd: opts.cwd, model: opts.model });
@@ -352,6 +361,11 @@ export class CodexAdapter implements AgentAdapter {
       },
     };
   }
+}
+
+function isMissingRolloutError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return /no rollout found|rollout not found|rollout.*missing/i.test(message);
 }
 
 function mapThreadStatus(value: unknown): SessionSummary['status'] {

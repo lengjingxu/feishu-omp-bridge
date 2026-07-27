@@ -45,4 +45,12 @@ describe('JsonProjectBindingStore', () => {
     await store.bindTopic({ chatId: 'chat-1', topicId: 'topic-1', projectKey: project.projectKey, codexThreadId: 'thread-1', createdBy: 'user-1', updatedAt: 1 });
     await expect(store.bindTopic({ chatId: 'chat-1', topicId: 'topic-2', projectKey: project.projectKey, codexThreadId: 'thread-1', createdBy: 'user-1', updatedAt: 2 })).rejects.toThrow('session already belongs');
   });
+
+  it('updates a topic binding when app-server replaces an empty session', async () => {
+    const store = new JsonProjectBindingStore(join(await mkdtemp(join(tmpdir(), 'feishu-project-store-')), 'bindings.json'));
+    store.registerProjects([project]);
+    await store.bindTopic({ chatId: 'chat-1', topicId: 'topic-1', projectKey: project.projectKey, codexThreadId: 'thread-old', createdBy: 'user-1', updatedAt: 1 });
+    await store.updateTopicSession('chat-1', 'topic-1', 'thread-new');
+    expect(store.findTopic('chat-1', 'topic-1')?.codexThreadId).toBe('thread-new');
+  });
 });

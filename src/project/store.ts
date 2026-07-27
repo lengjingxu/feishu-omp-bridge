@@ -64,6 +64,16 @@ export class JsonProjectBindingStore implements ProjectBindingStore {
     this.schedulePersist();
   }
 
+  async updateTopicSession(chatId: string, topicId: string, codexThreadId: string): Promise<void> {
+    const key = topicKey(chatId, topicId);
+    const current = this.data.topics[key];
+    if (!current) throw new Error(`topic not found: ${key}`);
+    const other = Object.values(this.data.topics).find((topic) => topic.codexThreadId === codexThreadId && topicKey(topic.chatId, topic.topicId) !== key);
+    if (other) throw new Error(`session already belongs to topic: ${topicKey(other.chatId, other.topicId)}`);
+    this.data.topics[key] = { ...current, codexThreadId, updatedAt: Date.now() };
+    this.schedulePersist();
+  }
+
   findProjectByChat(chatId: string): Project | undefined {
     return Object.values(this.data.projects).find((project) => project.chatId === chatId);
   }
