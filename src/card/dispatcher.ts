@@ -18,6 +18,7 @@ import {
 import type { WorkspaceStore } from '../workspace/store';
 import type { ProjectCatalog } from '../project/catalog';
 import type { ProjectBindingStore } from '../project/types';
+import type { SessionSyncManager } from '../session/sync';
 import { isThreadScoped } from '../bot/scope';
 import { lookupMessageThreadId } from '../bot/thread';
 
@@ -41,6 +42,7 @@ export interface CardDispatchDeps {
   chatModeCache: ChatModeCache;
   projectCatalog?: ProjectCatalog;
   projectBindings?: ProjectBindingStore;
+  sessionSync?: SessionSyncManager;
 }
 
 export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
@@ -117,6 +119,7 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
     fromCardAction: true,
     projectCatalog: deps.projectCatalog,
     projectBindings: deps.projectBindings,
+    sessionSync: deps.sessionSync,
   };
 
   const [name, ...rest] = cmd.split('.');

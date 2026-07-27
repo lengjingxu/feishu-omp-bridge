@@ -53,6 +53,7 @@ import { ProcessPool } from './process-pool';
 import { fetchQuotedContext, renderQuotedBlock, type QuotedContext } from './quote';
 import { addWorkingReaction, removeReaction } from './reaction';
 import { isThreadScoped } from './scope';
+import { SessionSyncManager } from '../session/sync';
 
 const DEBOUNCE_MS = 600;
 
@@ -131,6 +132,7 @@ export interface StartChannelDeps {
 export async function startChannel(deps: StartChannelDeps): Promise<BridgeChannel> {
   const { cfg, agent, sessions, workspaces, controls, projectCatalog, projectBindings } = deps;
   const activeRuns = new ActiveRuns();
+  const sessionSync = new SessionSyncManager();
   // ChatModeCache stays per-bridge-instance — invalidated on restart along
   // with everything else. Topic-mode chats only need one chat.get() call ever.
   const chatModeCache = new ChatModeCache();
@@ -244,6 +246,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           chatModeCache,
           projectCatalog,
           projectBindings,
+          sessionSync,
         }),
       ).catch((err) => log.fail('intake', err));
     },
@@ -264,6 +267,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           chatModeCache,
           projectCatalog,
           projectBindings,
+          sessionSync,
         });
       }).catch((err) => log.fail('cardAction', err));
     },
@@ -337,6 +341,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     channel,
     disconnect: async () => {
       keepalive.stop();
+      sessionSync.stopAll();
       pending.cancelAll();
       await channel.disconnect();
       await activeRuns.stopAll();
@@ -356,8 +361,9 @@ interface IntakeDeps {
   msg: NormalizedMessage;
   controls: Controls;
   chatModeCache: ChatModeCache;
-  projectCatalog?: ProjectCatalog;
+    projectCatalog?: ProjectCatalog;
   projectBindings?: ProjectBindingStore;
+  sessionSync?: SessionSyncManager;
 }
 
 async function intakeMessage(deps: IntakeDeps): Promise<void> {
@@ -374,6 +380,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     chatModeCache,
     projectCatalog,
     projectBindings,
+    sessionSync,
   } = deps;
   const preview = msg.content.length > 80 ? `${msg.content.slice(0, 80)}…` : msg.content;
   // Resolve scope (and underlying chat mode) once at intake — every
@@ -447,6 +454,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     controls,
     projectCatalog,
     projectBindings,
+    sessionSync,
   });
   if (handled) {
     const dropped = pending.cancel(scope);

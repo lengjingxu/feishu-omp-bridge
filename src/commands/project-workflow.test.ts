@@ -10,6 +10,7 @@ import type { Project } from '../project/types';
 import type { SessionSummary } from '../project/types';
 import { SessionStore } from '../session/store';
 import { WorkspaceStore } from '../workspace/store';
+import { SessionSyncManager } from '../session/sync';
 
 const project: Project = {
   projectKey: 'local::/tmp/demo',
@@ -90,5 +91,29 @@ describe('Codex project command workflow', () => {
     expect(cardText.indexOf('recent')).toBeGreaterThanOrEqual(0);
     expect(cardText.indexOf('older')).toBeGreaterThanOrEqual(0);
     expect(cardText.indexOf('recent')).toBeLessThan(cardText.indexOf('older'));
+  });
+
+  it('refreshes the Codex session bound to the current topic', async () => {
+    const updateCard = vi.fn().mockResolvedValue(undefined);
+    const bindings = new JsonProjectBindingStore(join(await mkdtemp(join(tmpdir(), 'feishu-command-test-')), 'bindings.json'));
+    bindings.registerProjects([project]);
+    await bindings.bindTopic({
+      chatId: 'chat-dm', topicId: 'topic-1', projectKey: project.projectKey,
+      codexThreadId: 'thread-1', createdBy: 'user-1', updatedAt: 1,
+    });
+    const ctx = context({ updateCard }, bindings);
+    ctx.msg.threadId = 'topic-1';
+    ctx.fromCardAction = true;
+    ctx.sessionSync = new SessionSyncManager();
+    ctx.agent = {
+      ...ctx.agent,
+      readSession: vi.fn().mockResolvedValue({
+        threadId: 'thread-1', preview: '最新进度', cwd: project.cwd, status: 'active', updatedAt: 2,
+        turnCount: 2, recentActivity: [{ kind: '助手', text: '正在运行测试' }],
+      }),
+    };
+
+    await expect(runCommandHandler('sync', '', ctx)).resolves.toBe(true);
+    expect(updateCard).toHaveBeenCalledWith('message-1', expect.objectContaining({ header: expect.any(Object) }));
   });
 });

@@ -1,3 +1,5 @@
+import type { SessionDetail } from '../project/types';
+
 interface ButtonSpec {
   text: string;
   value: Record<string, unknown>;
@@ -126,6 +128,29 @@ export function sessionsCard(projectName: string, sessions: SessionCardInfo[], n
   return shell('📚 Codex 会话', elements);
 }
 
+export function sessionProgressCard(projectName: string, detail: SessionDetail, autoSync = false): object {
+  const activity = detail.recentActivity.length > 0
+    ? detail.recentActivity.slice(-8).map((item) => {
+      const icon = item.kind === '用户' ? '👤' : item.kind === '助手' ? '🤖' : item.kind === '工具' ? '🛠️' : '🔹';
+      return `${icon} **${item.kind}**：${escapeMd(item.text.slice(0, 220))}`;
+    }).join('\n')
+    : '暂无可展示的最新活动。';
+  const status = sessionStatusText(detail.status, detail.activeFlags);
+  return shell('🔄 Codex 最新进度', [
+    divMd(`项目：**${escapeMd(projectName)}**\n状态：**${status}**\n最近更新：${formatRelative(detail.updatedAt)}\n历史轮次：${detail.turnCount}`),
+    HR,
+    divMd(activity),
+    HR,
+    actions([
+      { text: '🔄 刷新进度', value: { cmd: 'sync' }, style: 'primary' },
+      autoSync
+        ? { text: '⏹ 停止自动同步', value: { cmd: 'sync.stop' }, style: 'danger' }
+        : { text: '▶️ 开始自动同步', value: { cmd: 'sync.auto' } },
+      { text: '📊 查看状态', value: { cmd: 'status' } },
+    ]),
+  ]);
+}
+
 function sessionStatusText(status: string, activeFlags: string[] | undefined): string {
   if (activeFlags?.includes('waitingOnApproval')) return '等待确认';
   if (activeFlags?.includes('waitingOnUserInput')) return '等待输入';
@@ -148,6 +173,8 @@ export function topicWelcomeCard(projectName: string, sessionTitle: string, cwd:
     divMd(`项目：**${escapeMd(projectName)}**\n会话：**${escapeMd(sessionTitle)}**\n工作目录：\`${escapeCode(cwd)}\`\n\n现在可以直接在这个话题中输入中文需求。`),
     actions([
       { text: '📊 查看状态', value: { cmd: 'status' } },
+      { text: '🔄 刷新进度', value: { cmd: 'sync' }, style: 'primary' },
+      { text: '▶️ 自动同步', value: { cmd: 'sync.auto' } },
       { text: '⏹ 停止任务', value: { cmd: 'stop' }, style: 'danger' },
       { text: '📚 切换会话', value: { cmd: 'sessions' } },
       { text: '🆕 新建会话', value: { cmd: 'session.new' } },

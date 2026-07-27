@@ -15,6 +15,7 @@ import {
   helpCard,
   projectWelcomeCard,
   projectsCard,
+  sessionProgressCard,
   sessionsCard,
   statusCard,
   topicWelcomeCard,
@@ -51,6 +52,7 @@ import { createBoundChat, defaultChatName } from '../bot/group';
 import { lookupMessageThreadId } from '../bot/thread';
 import type { ProjectCatalog } from '../project/catalog';
 import type { Project, ProjectBindingStore } from '../project/types';
+import type { SessionSyncManager } from '../session/sync';
 
 export interface Controls {
   /** Restart the bridge in-process: disconnect WS, kill OMP runs, reload
@@ -95,6 +97,7 @@ export interface CommandContext {
   fromCardAction?: boolean;
   projectCatalog?: ProjectCatalog;
   projectBindings?: ProjectBindingStore;
+  sessionSync?: SessionSyncManager;
 }
 
 type Handler = (args: string, ctx: CommandContext) => Promise<void>;
@@ -110,6 +113,7 @@ const handlers: Record<string, Handler> = {
   '/cd': handleCd,
   '/ws': handleWs,
   '/status': handleStatus,
+  '/sync': handleSync,
   '/help': handleHelp,
   '/account': handleAccount,
   '/config': handleConfig,
@@ -148,6 +152,7 @@ export async function tryHandleCommand(ctx: CommandContext): Promise<boolean> {
     '会话': '/sessions', '查看会话': '/sessions', '新建': '/session new', '新建会话': '/session new',
     '状态': '/status', '当前状态': '/status', '停止': '/stop', '停止任务': '/stop',
     '帮助': '/help', '怎么用': '/help',
+    '同步': '/sync', '刷新进度': '/sync', '刷新 Codex 进度': '/sync',
   };
   const normalized = aliases[trimmed] ?? trimmed;
   if (!normalized.startsWith('/')) return false;
@@ -613,6 +618,51 @@ async function handleStatus(_args: string, ctx: CommandContext): Promise<void> {
     chatMode: ctx.chatMode,
   });
   await ctx.channel.send(ctx.msg.chatId, { card }, { replyTo: ctx.msg.messageId });
+}
+
+async function handleSync(args: string, ctx: CommandContext): Promise<void> {
+  const binding = ctx.msg.threadId ? ctx.projectBindings?.findTopic(ctx.msg.chatId, ctx.msg.threadId) : undefined;
+  if (!binding || !ctx.agent.readSession || !ctx.projectBindings || !ctx.sessionSync) {
+    await reply(ctx, '当前消息不在已连接的 Codex 话题中，请进入对应话题后再刷新。');
+    return;
+  }
+  const project = ctx.projectBindings.projectFor(binding.projectKey);
+  if (!project) {
+    await reply(ctx, '没有找到这个话题绑定的项目，请重新打开项目列表。');
+    return;
+  }
+
+  const autoMode = args.trim() === 'auto';
+  const stopMode = args.trim() === 'stop';
+  if (stopMode) ctx.sessionSync.stop(ctx.scope);
+
+  const update = async (detail: import('../project/types').SessionDetail): Promise<void> => {
+    const running = ctx.sessionSync?.isRunning(ctx.scope) ?? false;
+    const card = sessionProgressCard(project.name, detail, running);
+    if (ctx.fromCardAction) {
+      await ctx.channel.updateCard(ctx.msg.messageId, card);
+    } else {
+      await ctx.channel.send(ctx.msg.chatId, { card }, { replyTo: ctx.msg.messageId, replyInThread: true });
+    }
+  };
+  const read = async (): Promise<import('../project/types').SessionDetail> => {
+    const current = ctx.msg.threadId ? ctx.projectBindings?.findTopic(ctx.msg.chatId, ctx.msg.threadId) : undefined;
+    if (!current) throw new Error('话题绑定已不存在');
+    return ctx.agent.readSession!(current.codexThreadId);
+  };
+
+  try {
+    await ctx.sessionSync.refresh(read, update);
+    if (autoMode) {
+      ctx.sessionSync.start(ctx.scope, read, update, {
+        intervalMs: 5_000,
+        onError: (error) => log.warn('session-sync', 'poll-failed', { scope: ctx.scope, error: String(error) }),
+      });
+    }
+  } catch (error) {
+    log.fail('session-sync', error, { scope: ctx.scope });
+    await reply(ctx, `同步 Codex 进度失败：${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 async function handleStop(_args: string, ctx: CommandContext): Promise<void> {

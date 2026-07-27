@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { projectWelcomeCard, projectsCard, sessionsCard, topicWelcomeCard, welcomeCard } from './templates';
+import { projectWelcomeCard, projectsCard, sessionProgressCard, sessionsCard, topicWelcomeCard, welcomeCard } from './templates';
+import type { SessionDetail } from '../project/types';
 
 function text(card: object): string {
   return JSON.stringify(card);
@@ -33,5 +34,16 @@ describe('project-first Feishu cards', () => {
     expect(project).toContain('项目已连接');
     expect(topic).toContain('会话已连接');
     expect(topic).not.toContain('thread_id');
+  });
+
+  it('renders manual and automatic session sync actions', () => {
+    const detail: SessionDetail = {
+      threadId: 'thread-1', preview: '最新进度', cwd: '/tmp/project', status: 'active', updatedAt: Date.now(),
+      turnCount: 2, recentActivity: [{ kind: '助手', text: '正在执行测试' }],
+    };
+    const card = text(sessionProgressCard('示例项目', detail));
+    expect(card).toContain('刷新进度');
+    expect(card).toContain('开始自动同步');
+    expect(text(sessionProgressCard('示例项目', detail, true))).toContain('停止自动同步');
   });
 });
