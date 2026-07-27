@@ -7,6 +7,7 @@ import {
   getOmpTools,
   getAgentBackend,
   getCodexAppServerBinary,
+  resolveCodexAppServerBinary,
   getProjectRoots,
   type AppConfig,
 } from './schema';
@@ -51,6 +52,7 @@ describe('Codex project preferences', () => {
     expect(getAgentBackend(cfg())).toBe('omp');
     expect(getAgentBackend(cfg({ agentBackend: 'codex' }))).toBe('codex');
     expect(getCodexAppServerBinary(cfg({ codexAppServerBinary: ' /opt/codex ' }))).toBe('/opt/codex');
+    expect(resolveCodexAppServerBinary(cfg({ codexAppServerBinary: ' /opt/codex ' }))).toBe('/opt/codex');
     expect(getProjectRoots(cfg({ projectRoots: [' /tmp/a ', '', 3 as unknown as string] }))).toEqual(['/tmp/a']);
   });
 });

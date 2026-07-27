@@ -15,7 +15,7 @@ import {
   getOmpThinking,
   getOmpTools,
   getAgentBackend,
-  getCodexAppServerBinary,
+  resolveCodexAppServerBinary,
   isComplete,
   secretKeyForApp,
 } from '../../config/schema';
@@ -89,7 +89,7 @@ export async function runStart(opts: StartOptions): Promise<void> {
   await preFlightChecks({ skipCheckLarkCli: opts.skipCheckLarkCli });
 
   const agent: AgentAdapter = getAgentBackend(cfg) === 'codex'
-    ? new CodexAdapter({ binary: getCodexAppServerBinary(cfg) })
+    ? new CodexAdapter({ binary: resolveCodexAppServerBinary(cfg) })
     : new OmpAdapter({
       binary: getOmpBinary(cfg),
       sessionDir: getOmpSessionDir(cfg),

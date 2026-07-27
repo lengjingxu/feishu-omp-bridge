@@ -257,6 +257,21 @@ async function handleProjects(args: string, ctx: CommandContext): Promise<void> 
  * the newest non-archived session at the top of the picker.
  */
 async function sortProjectsByRecentSession(projects: Project[], agent: AgentAdapter): Promise<Project[]> {
+  if (agent.listRecentSessions) {
+    try {
+      const latestByCwd = new Map<string, number>();
+      for (const session of await agent.listRecentSessions()) {
+        if (session.status === 'archived') continue;
+        latestByCwd.set(session.cwd, Math.max(latestByCwd.get(session.cwd) ?? 0, session.updatedAt));
+      }
+      return projects
+        .map((project, index) => ({ project, index, updatedAt: latestByCwd.get(project.cwd) ?? 0 }))
+        .sort((a, b) => b.updatedAt - a.updatedAt || a.index - b.index)
+        .map(({ project }) => project);
+    } catch (err) {
+      log.warn('project', 'activity-sort-failed', { err: String(err) });
+    }
+  }
   if (!agent.listSessions) return projects;
   const ranked = await Promise.all(projects.map(async (project, index) => {
     try {

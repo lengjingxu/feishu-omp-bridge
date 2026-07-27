@@ -19,7 +19,7 @@ for await (const line of rl) {
   if (msg.method === 'initialize') send({ id: msg.id, result: {} });
   if (msg.method === 'thread/list') send({ id: msg.id, result: { data: [{ id: 'thread-existing', name: '旧会话', preview: '修复卡片', cwd: '/tmp/project', updatedAt: 10, status: { type: 'idle' } }], nextCursor: msg.params.cursor ? null : 'cursor-2', backwardsCursor: null } });
   if (msg.method === 'model/list') send({ id: msg.id, result: { data: [{ model: 'gpt-5.6-sol', isDefault: true }] } });
-  if (msg.method === 'thread/start') send({ id: msg.id, result: { thread: { id: 'thread-new', name: null, preview: '', cwd: '/tmp/project' } } });
+  if (msg.method === 'thread/start') { activeThreadId = 'thread-new'; send({ id: msg.id, result: { thread: { id: 'thread-new', name: null, preview: '', cwd: '/tmp/project' } } }); }
   if (msg.method === 'thread/resume') {
     if (msg.params.threadId === 'missing-rollout') send({ id: msg.id, error: { code: -32000, message: 'no rollout found for thread id missing-rollout' } });
     else { activeThreadId = msg.params.threadId; send({ id: msg.id, result: { thread: { id: msg.params.threadId, cwd: '/tmp/project' } } }); }
@@ -27,6 +27,10 @@ for await (const line of rl) {
   if (msg.method === 'thread/read') send({ id: msg.id, result: { thread: { id: msg.params.threadId, sessionId: 'session-1', name: '详情会话', preview: '查看详情', cwd: '/tmp/project', updatedAt: 20, status: { type: 'active', activeFlags: ['waitingOnUserInput'] }, source: 'vscode', turns: [{ items: [{ type: 'userMessage', content: [{ type: 'text', text: '请查看', text_elements: [] }] }, { type: 'agentMessage', text: '正在查看' }, { type: 'commandExecution', command: 'pnpm test' }] }] } } });
   if (msg.method === 'turn/start') {
     send({ id: msg.id, result: { turn: { id: 'turn-1' } } });
+    if (activeThreadId === 'legacy-compact') {
+      send({ method: 'error', params: { threadId: activeThreadId, error: { message: 'Error running remote compact task: model requires a newer version of Codex' } } });
+      continue;
+    }
     send({ method: 'item/agentMessage/delta', params: { threadId: activeThreadId, turnId: 'turn-1', itemId: 'item-1', delta: '完成' } });
     send({ method: 'turn/completed', params: { threadId: activeThreadId, turn: { id: 'turn-1', status: 'completed' } } });
   }
@@ -102,6 +106,19 @@ describe('CodexAdapter', () => {
       { type: 'system', sessionId: 'thread-existing', cwd: '/tmp/project', model: 'gpt-5.6-sol' },
       { type: 'text', delta: '完成' },
       { type: 'done', sessionId: 'thread-existing' },
+    ]);
+    await adapter.close();
+  });
+
+  it('replaces a historical thread when its model cannot compact', async () => {
+    const adapter = new CodexAdapter({ binary: await fakeCodex() });
+    const run = adapter.run({ prompt: '继续处理', sessionId: 'legacy-compact', cwd: '/tmp/project' });
+    await expect(collect(run.events)).resolves.toEqual([
+      { type: 'system', sessionId: 'legacy-compact', cwd: '/tmp/project', model: 'gpt-5.6-sol' },
+      { type: 'ui_notice', message: '原 Codex 会话使用了当前设备不兼容的配置，已自动新建会话并重试。', level: 'warning' },
+      { type: 'system', sessionId: 'thread-new', cwd: '/tmp/project' },
+      { type: 'text', delta: '完成' },
+      { type: 'done', sessionId: 'thread-new' },
     ]);
     await adapter.close();
   });

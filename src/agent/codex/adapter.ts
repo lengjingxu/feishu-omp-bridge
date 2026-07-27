@@ -95,6 +95,32 @@ export class CodexAdapter implements AgentAdapter {
     return (await this.listSessionPage(cwd)).sessions;
   }
 
+  /**
+   * Fetch the recent session index once for project-level views. Calling
+   * thread/list once per project makes a large project picker feel hung.
+   */
+  async listRecentSessions(): Promise<SessionSummary[]> {
+    const sessions: SessionSummary[] = [];
+    let cursor: string | undefined;
+    do {
+      const response = await this.client.request<{ data?: Array<Record<string, unknown>>; nextCursor?: string | null }>('thread/list', {
+        limit: 100,
+        archived: false,
+        sourceKinds: ['cli', 'vscode', 'appServer'],
+        sortKey: 'updated_at',
+        sortDirection: 'desc',
+        useStateDbOnly: true,
+        ...(cursor ? { cursor } : {}),
+      });
+      for (const thread of response.data ?? []) {
+        const session = mapThread(thread, '');
+        if (session?.cwd) sessions.push(session);
+      }
+      cursor = response.nextCursor ?? undefined;
+    } while (cursor);
+    return sessions;
+  }
+
   async listSessionPage(cwd: string, cursor?: string): Promise<SessionPage> {
     const response = await this.client.request<{ data?: Array<Record<string, unknown>>; nextCursor?: string | null }>('thread/list', {
       cwd,
@@ -178,6 +204,8 @@ export class CodexAdapter implements AgentAdapter {
     const pendingUi = new Map<string, PendingUi>();
     let threadId: string | undefined;
     let turnId: string | undefined;
+    let effectiveModel: string | undefined;
+    let replacementStarted = false;
     let stopped = false;
     let settled = false;
     let unsubscribe: (() => void) | undefined;
@@ -194,12 +222,45 @@ export class CodexAdapter implements AgentAdapter {
       exitResolve();
     };
 
+    const isHistoricalCompatibilityFailure = (message: string): boolean => {
+      if (!opts.sessionId || replacementStarted) return false;
+      return /requires a newer version of Codex|unsupported service_tier|unknown variant|remote compact task|pre-sampling compact/i.test(message);
+    };
+
+    const replaceHistoricalSession = (reason: string): boolean => {
+      if (!isHistoricalCompatibilityFailure(reason)) return false;
+      replacementStarted = true;
+      queue.push({ type: 'ui_notice', message: '原 Codex 会话使用了当前设备不兼容的配置，已自动新建会话并重试。', level: 'warning' });
+      void (async () => {
+        try {
+          const replacement = await client.request<{ id?: string; thread?: { id?: string } }>('thread/start', {
+            ...(opts.cwd ? { cwd: opts.cwd } : {}),
+          });
+          threadId = replacement.thread?.id ?? replacement.id;
+          if (!threadId) throw new Error('Codex app-server did not return a replacement thread id');
+          turnId = undefined;
+          queue.push({ type: 'system', sessionId: threadId, cwd: opts.cwd });
+          const turn = await client.request<{ id?: string; turn?: { id?: string } }>('turn/start', {
+            threadId,
+            input: [{ type: 'text', text: opts.prompt, text_elements: [] }],
+            ...(opts.cwd ? { cwd: opts.cwd } : {}),
+          });
+          turnId = turn.turn?.id ?? turn.id;
+        } catch (err) {
+          if (!stopped) queue.push({ type: 'error', message: err instanceof Error ? err.message : String(err) });
+          finish();
+        }
+      })();
+      return true;
+    };
+
     const handleNotification = (message: JsonRpcNotification): void => {
       const params = message.params ?? {};
       if (message.method === 'error') {
         const error = params.error as { message?: string } | undefined;
-        if (!params.threadId || params.threadId === threadId) {
-          queue.push({ type: 'error', message: error?.message ?? 'Codex app-server 返回错误' });
+        const errorMessage = error?.message ?? 'Codex app-server 返回错误';
+        if (!replaceHistoricalSession(errorMessage) && (!params.threadId || params.threadId === threadId)) {
+          queue.push({ type: 'error', message: errorMessage });
         }
         return;
       }
@@ -276,7 +337,11 @@ export class CodexAdapter implements AgentAdapter {
         }
       } else if (message.method === 'turn/completed') {
         const turn = params.turn as { status?: string; error?: { message?: string } | null } | undefined;
-        if (turn?.status === 'failed') queue.push({ type: 'error', message: turn.error?.message ?? 'Codex 执行失败' });
+        if (turn?.status === 'failed') {
+          const errorMessage = turn.error?.message ?? 'Codex 执行失败';
+          if (!replaceHistoricalSession(errorMessage)) queue.push({ type: 'error', message: errorMessage });
+          if (replacementStarted) return;
+        }
         else if (!stopped) queue.push({ type: 'done', sessionId: threadId });
         finish();
       }
@@ -322,7 +387,7 @@ export class CodexAdapter implements AgentAdapter {
         await this.client.ensureStarted();
         unsubscribe = this.client.onNotification(handleNotification);
         unsubscribeRequests = this.client.onServerRequest(handleServerRequest);
-        const effectiveModel = opts.model ?? (opts.sessionId ? await this.resolveDefaultModel() : undefined);
+        effectiveModel = opts.model ?? (opts.sessionId ? await this.resolveDefaultModel() : undefined);
         if (opts.sessionId) log.info('codex', 'resolved-model', { sessionId: opts.sessionId, model: effectiveModel ?? null });
         let thread: { id?: string; thread?: { id?: string } };
         if (opts.sessionId) {
@@ -330,8 +395,7 @@ export class CodexAdapter implements AgentAdapter {
             thread = await client.request('thread/resume', {
               threadId: opts.sessionId,
               ...(opts.cwd ? { cwd: opts.cwd } : {}),
-              ...(effectiveModel ? { model: effectiveModel } : {}),
-            });
+          });
           } catch (err) {
             if (!isMissingRolloutError(err)) throw err;
             queue.push({ type: 'ui_notice', message: '原 Codex 会话没有可恢复的执行记录，已自动新建会话。', level: 'warning' });
@@ -347,7 +411,7 @@ export class CodexAdapter implements AgentAdapter {
           threadId,
           input: [{ type: 'text', text: opts.prompt, text_elements: [] }],
           ...(opts.cwd ? { cwd: opts.cwd } : {}),
-          ...(effectiveModel ? { model: effectiveModel } : {}),
+          ...(opts.sessionId && effectiveModel && !replacementStarted ? { model: effectiveModel } : {}),
         });
         turnId = turn.turn?.id ?? turn.id;
       } catch (err) {

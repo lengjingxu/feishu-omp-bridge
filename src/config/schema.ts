@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { paths } from './paths';
 
 export type TenantBrand = 'feishu' | 'lark';
@@ -226,6 +227,20 @@ export function getAgentBackend(cfg: AppConfig): 'omp' | 'codex' {
 export function getCodexAppServerBinary(cfg: AppConfig): string {
   const raw = cfg.preferences?.codexAppServerBinary;
   return typeof raw === 'string' && raw.trim() ? raw.trim() : 'codex';
+}
+
+/**
+ * Use the Codex runtime that belongs to the installed desktop app when the
+ * operator did not override it. The PATH `codex` on macOS can be an older
+ * Homebrew CLI whose app-server cannot understand the desktop model cache.
+ */
+export function resolveCodexAppServerBinary(cfg: AppConfig): string {
+  const configured = getCodexAppServerBinary(cfg);
+  if (configured !== 'codex') return configured;
+  const fromEnv = process.env.CODEX_CLI_PATH?.trim();
+  if (fromEnv) return fromEnv;
+  const desktopBinary = '/Applications/ChatGPT.app/Contents/Resources/codex';
+  return existsSync(desktopBinary) ? desktopBinary : configured;
 }
 
 export function getProjectRoots(cfg: AppConfig): string[] {

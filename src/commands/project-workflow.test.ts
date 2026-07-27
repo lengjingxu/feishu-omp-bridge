@@ -77,9 +77,11 @@ describe('Codex project command workflow', () => {
     };
     ctx.agent = {
       ...ctx.agent,
-      listSessions: async (cwd: string): Promise<SessionSummary[]> => cwd === recent.cwd
-        ? [{ threadId: 'recent-thread', preview: '最近会话', cwd, status: 'idle', updatedAt: 200 }]
-        : [{ threadId: 'archived-thread', preview: '归档会话', cwd, status: 'archived', updatedAt: 300 }, { threadId: 'old-thread', preview: '旧会话', cwd, status: 'idle', updatedAt: 100 }],
+      listRecentSessions: async (): Promise<SessionSummary[]> => [
+        { threadId: 'recent-thread', preview: '最近会话', cwd: recent.cwd, status: 'idle', updatedAt: 200 },
+        { threadId: 'archived-thread', preview: '归档会话', cwd: older.cwd, status: 'archived', updatedAt: 300 },
+        { threadId: 'old-thread', preview: '旧会话', cwd: older.cwd, status: 'idle', updatedAt: 100 },
+      ],
     };
 
     await runCommandHandler('projects', '', ctx);
