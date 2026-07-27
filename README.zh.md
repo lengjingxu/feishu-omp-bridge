@@ -1,28 +1,91 @@
-# feishu-omp-bridge
+# 飞书 OMP Bridge 使用说明
 
-把飞书 / Lark 消息和本地 Oh My Pi CLI 或 Codex app-server 打通的轻量 bot。飞书使用应用长连接接收消息，结果以中文卡片或 Markdown 流式回到飞书，并按项目 / 话题维度隔离保存会话。
+这是一个运行在本机的飞书中国版机器人桥接服务。它使用飞书应用长连接收发消息，把消息交给本机的 Codex `app-server` 或 Oh My Pi（OMP），再把中文卡片、执行进度和结果发回原来的私聊、群聊或话题。
 
-## 能干什么
+英文 README：[README.md](README.md)
 
-- 在飞书私聊、群聊 `@bot`、话题群 topic、云文档评论 `@bot` 中把消息转给本地 OMP。
-- 流式卡片展示 OMP 文本、thinking、工具调用、工具更新和工具输出。
-- 把 OMP 原生 UI 请求（`confirm`、`select`、`input`、`editor`）映射成飞书交互卡片，并把用户选择实时写回同一个 RPC run。
-- 在飞书输出里展示 OMP extension 的 `notify`、`setStatus`、`setWidget`、`setTitle`、`set_editor_text` 和 `open_url` 事件。
-- 注册飞书原生 OMP host tools（`feishu_current_context`、`feishu_send_message`、`feishu_reply_message`、`feishu_get_message`），让 OMP 不经 `lark-cli` 也能直接使用飞书能力。
-- 注册只读 `feishu://` host URI scheme，例如 `feishu://current/context` 和 `feishu://message/<message_id>`。
-- OMP 运行中同一 chat/topic 再发消息会直接进入当前 run 的 `follow_up`；消息以 `!` 开头则作为 `steer`。
-- 每个 chat / topic 保存自己的 OMP session id，下一轮自动用 `omp --mode rpc --resume <session_id>` 继续。
-- 保留 bridge 命令：`/new`、`/cd`、`/ws`、`/status`、`/config`、`/stop`、`/timeout`、`/ps`、`/exit`、`/reconnect`、`/doctor`。
-- 图片 / 文件会下载到本地路径；图片会转成 OMP RPC image payload。
-- OMP 可以继续使用本机可用工具，例如 `lark-cli`、`git`、项目测试命令等。
-- Codex 项目模式使用本机 `codex app-server`，通过飞书长连接收发消息，不需要给 Bridge 配置公网回调地址。
+## 推荐体验：Codex 项目模式
 
-## Codex 项目模式
+```text
+私聊 Bot
+  → 点击“选择项目”
+  → 选择本地项目目录
+  → 自动创建项目群
+  → 点击“查看会话”
+  → 选择历史会话或新建会话
+  → 自动创建话题
+  → 在话题中直接用中文对话
+```
 
-将 `preferences.agentBackend` 设置为 `codex`，并配置允许展示给飞书用户的本地项目目录：
+映射关系固定为：
+
+```text
+一个本地项目目录  →  一个飞书项目群
+一个 Codex 会话    →  一个飞书话题
+```
+
+项目按最近一次未归档 Codex 会话的活动时间排序。归档会话不会显示。项目只按本地目录识别，不要求目录是 Git 仓库，也不要求目录下存在特定文件。
+
+## 安装前提
+
+- Node.js 20+
+- pnpm
+- Codex 模式：本机已安装并登录 Codex，`codex app-server --help` 可运行
+- OMP 模式：本机已安装并配置 OMP，`omp --mode rpc` 可运行
+- 飞书中国版自建应用，已启用机器人和应用长连接
+
+## 安装和构建
+
+```bash
+git clone https://github.com/lengjingxu/feishu-omp-bridge.git
+cd feishu-omp-bridge
+pnpm install
+pnpm build
+```
+
+开发模式：
+
+```bash
+pnpm dev
+```
+
+## 飞书应用设置
+
+在飞书开放平台配置自建应用：
+
+1. 启用机器人能力。
+2. 开启应用长连接。
+3. 订阅消息接收事件 `im.message.receive_v1`。
+4. 按需开通发送消息、读取消息、创建群聊、创建话题和邀请成员权限。
+5. 发布应用版本，并确认当前账号可以使用该应用。
+
+Bridge 会主动连接飞书服务器，因此不需要公网回调地址，也不需要把本机端口暴露到互联网。
+
+## 首次启动
+
+```bash
+node bin/feishu-omp-bridge.mjs run
+```
+
+首次运行向导会要求填写租户、App ID 和 App Secret。中国版请选择 `feishu`。配置保存到本机后，App Secret 会迁移到加密 keystore；不要把配置文件复制到 Git 仓库。
+
+## 配置 Codex 项目模式
+
+编辑本机配置 `~/.feishu-omp-bridge/config.json`，将后端设为 `codex`，并指定可以被项目选择卡展示的目录根路径：
 
 ```json
 {
+  "accounts": {
+    "app": {
+      "id": "cli_your_app_id",
+      "tenant": "feishu",
+      "secret": {
+        "source": "exec",
+        "provider": "feishu-omp-bridge",
+        "id": "app-cli_your_app_id"
+      }
+    }
+  },
   "preferences": {
     "agentBackend": "codex",
     "projectRoots": [
@@ -33,171 +96,168 @@
 }
 ```
 
-首次私聊机器人时，发送“项目”或点击欢迎卡片中的“选择项目”。选择项目后，Bridge 会自动创建一个私有话题群；在群里点击“查看会话”，选择已有会话或“新建会话”，随后进入自动创建的话题即可直接输入中文需求。
+上面是脱敏示例。推荐先运行向导生成配置，再修改 `preferences`；不要把真实 App ID、Secret、个人路径、open_id 或 chat_id 提交到仓库。
 
-Codex 模式中的用户入口以飞书卡片为主，不需要记忆英文命令。`/projects`、`/sessions`、`/status`、`/stop`、`/new` 等命令仍保留，方便高级用户排查问题。
+### Codex 配置继承规则
 
-## 前置条件
+Bridge 默认不设置模型、代理、服务等级或自定义 provider。它会调用设备上的 Codex app-server，由 Codex 自己读取登录状态和本机配置。
 
-- Node.js 20+
-- pnpm（源码开发 / 本地构建时使用）
-- OMP 模式：已安装并配置 Oh My Pi CLI；先运行一次 `omp`，并确认 `omp --mode rpc` 可用。
-- Codex 模式：已安装并完成登录的 `codex` CLI，并确认 `codex app-server --help` 可用。
-- 一个飞书 / Lark PersonalAgent 应用；首次启动向导会协助配置。
-
-## 安装 / 构建
-
-```bash
-pnpm install
-pnpm build
-```
-
-本地开发：
-
-```bash
-pnpm dev
-```
-
-如果作为包安装，CLI 名称是：
-
-```bash
-feishu-omp-bridge
-```
-
-不带子命令时默认等价于 `feishu-omp-bridge run`。
-
-## 首次启动
-
-```bash
-feishu-omp-bridge
-```
-
-首次启动会检查配置并引导完成：
-
-1. 选择飞书或 Lark 租户。
-2. 填入 PersonalAgent App ID / App Secret。
-3. 可选安装并绑定 `lark-cli`，供 OMP 调用飞书 API 工具。
-4. 凭据写入 `~/.feishu-omp-bridge/config.json`，密钥加密保存在本地 keystore。
-
-## CLI 命令
-
-```bash
-feishu-omp-bridge run [-c <config>]     前台启动 bot
-feishu-omp-bridge ps                    列出本机所有正在跑的 bridge 进程
-feishu-omp-bridge kill <id|#>           kill 指定 bridge 进程
-feishu-omp-bridge secrets <subcommand>  管理本地加密 secret keystore
-feishu-omp-bridge --help                列出所有命令
-```
-
-### 后台 daemon
-
-```bash
-feishu-omp-bridge start                 注册（如需）+ 启动后台 daemon
-feishu-omp-bridge stop                  停止 daemon 并关闭开机自启
-feishu-omp-bridge restart               重启 daemon
-feishu-omp-bridge status                查看 daemon 状态和日志路径
-feishu-omp-bridge unregister            删除 daemon 注册文件
-```
-
-后台机制：
-
-- macOS：launchd user agent `ai.feishu-omp-bridge.bot`
-- Linux：systemd 用户单元 `feishu-omp-bridge.bot.service`
-- Windows：Task Scheduler 任务 `FeishuOmpBridge.Bot`
-
-## 飞书聊天命令
-
-| 命令 | 作用 |
-| --- | --- |
-| `/new`、`/reset` | 清空当前 chat / topic 的 OMP session，下一条消息新建会话。 |
-| `/new chat [name]` | 新建群并拉你进去，继承当前 cwd。 |
-| `/cd <path>` | 切换当前 chat / topic 的工作目录；会重置 session。支持 `~/xxx`。 |
-| `/ws list` | 查看命名工作空间。 |
-| `/ws add <name> <path>` | 保存命名工作空间。 |
-| `/ws use <name>` | 切换到命名工作空间并重置 session。 |
-| `/config` | 打开偏好设置卡片。 |
-| `/account` | 更换 bot app 凭据并重连。 |
-| `/status` | 查看当前 scope、cwd、session、agent。 |
-| `/stop` | 终止当前正在跑的 OMP 任务。 |
-| `/timeout [N|off|default]` | 设置当前 session 的 idle 探活分钟数，或关闭 / 恢复全局默认。 |
-| `/ps` | 列出本机所有 bot，并标识当前正在回复的进程。 |
-| `/exit <id|#>` | 关闭指定 bot 进程。 |
-| `/reconnect` | 强制重连 WebSocket。 |
-| `/doctor [描述]` | 把最近日志和故障描述交给 OMP 自助诊断。 |
-| `/help` | 显示帮助卡片。 |
-
-其他普通消息会直接交给 OMP。群聊默认需要 `@bot`；私聊不需要。
-
-Codex 项目模式下，推荐直接点击卡片；也支持发送“项目”“会话”“新建”“状态”“停止”“帮助”等中文快捷词。项目群顶层只处理项目操作，自动创建的话题才会把普通消息交给对应 Codex 会话。
-
-## 数据目录
-
-| 路径 | 用途 |
-| --- | --- |
-| `~/.feishu-omp-bridge/config.json` | App 凭据、secret refs、偏好配置。 |
-| `~/.feishu-omp-bridge/secrets.enc` | 本地加密 secret keystore。 |
-| `~/.feishu-omp-bridge/sessions.json` | 每个 chat / topic 的 OMP session id、cwd 和可选 timeout 覆盖。 |
-| `~/.feishu-omp-bridge/project-bindings.json` | Project → 飞书群、话题 → Codex session 的持久化映射。 |
-| `~/.feishu-omp-bridge/omp-sessions/` | bridge 专用 OMP JSONL session 文件。 |
-| `~/.feishu-omp-bridge/workspaces.json` | 命名工作空间映射。 |
-| `~/.feishu-omp-bridge/processes.json` | 当前运行的 bridge 进程注册表。 |
-| `~/.feishu-omp-bridge/media/` | 下载的图片 / 文件缓存。 |
-| `~/.feishu-omp-bridge/logs/` | 结构化日志和 daemon stdout/stderr 日志。 |
-
-## OMP 偏好配置
-
-可在 `config.json` 的 `preferences` 中设置：
+在 macOS 上，如果没有设置 `codexAppServerBinary`，Bridge 会优先使用 ChatGPT 桌面应用自带的 Codex runtime，以避免系统 PATH 中的旧 CLI 与桌面端模型缓存不兼容。确实需要切换时才显式配置：
 
 ```json
 {
   "preferences": {
-    "ompBinary": "omp",
-    "ompModel": "gpt-5.5",
-    "ompThinking": "xhigh",
-    "ompSessionDir": "~/.feishu-omp-bridge/omp-sessions",
-    "ompTools": "read,bash,edit,write",
-    "messageReply": "markdown",
-    "showToolCalls": true,
-    "maxConcurrentRuns": 10,
-    "runIdleTimeoutMinutes": 0,
-    "requireMentionInGroup": true
+    "codexAppServerBinary": "/path/to/codex"
   }
 }
 ```
 
-- `ompBinary`：OMP 可执行文件名或绝对路径，默认 `omp`。
-- `ompModel`：传给 `omp --model` 的模型；留空则由 OMP 自身配置决定。
-- `ompThinking`：传给 `omp --thinking` 的思考级别；留空则由 OMP 自身配置决定。
-- `ompSessionDir`：本 bridge 使用的 OMP session 目录；默认 `~/.feishu-omp-bridge/omp-sessions`。
-- `ompTools`：传给 `omp --tools` 的逗号分隔工具白名单；留空则启用 OMP 默认工具集。
-- `messageReply`：`card`、`markdown` 或 `text`。
-- `showToolCalls`：是否在卡片 / Markdown 中展示工具调用过程。
+临时覆盖也可以使用：
 
-## 飞书原生 OMP host 能力
+```bash
+CODEX_CLI_PATH=/path/to/codex node bin/feishu-omp-bridge.mjs run
+```
 
-bridge 启动的每个 OMP run 都会注册这些 host tools：
+不要在 Bridge 配置中手工添加 `model_provider`、`service_tier` 或代理参数来模拟设备配置。
 
-| Tool | 用途 |
+## 飞书中如何使用
+
+### 私聊 Bot
+
+发送“项目”“我的项目”“选择项目”或“开始”，即可打开项目卡片。也可以点击欢迎卡片中的“选择项目”。
+
+### 选择项目
+
+卡片展示项目名称、目录和最近使用情况。选择后会自动创建一个私有项目群，群名类似 `Codex · 项目名`，并发送项目欢迎卡片。
+
+### 选择会话
+
+进入项目群，点击“查看会话”。列表只显示该项目目录下未归档的 Codex 会话，并按最近活动时间排序。可以选择“继续此会话”，也可以点击“新建会话”。
+
+### 进入话题
+
+Bridge 会在项目群创建一个新的话题根消息，并把它绑定到选中的 Codex 会话。之后只在这个话题里直接发送中文需求即可，不需要记 session ID，也不需要输入英文命令。
+
+项目群顶层只处理项目级操作，避免普通消息误触发 Codex。常用中文入口：
+
+| 发送内容 | 作用 |
 | --- | --- |
-| `feishu_current_context` | 返回当前 scope、chat、topic、触发消息和 cwd。 |
-| `feishu_send_message` | 向当前 chat 或显式 `chatId` 发送 Markdown。 |
-| `feishu_reply_message` | 回复触发消息或显式 `messageId`。 |
-| `feishu_get_message` | 按 `messageId` 拉取并规范化飞书消息。 |
+| 项目、我的项目、选择项目 | 打开项目列表 |
+| 会话、查看会话 | 打开当前项目的会话列表 |
+| 新建、新建会话 | 创建新的 Codex 会话 |
+| 状态、当前状态 | 查看当前项目或话题状态 |
+| 停止、停止任务 | 中断当前任务 |
+| 帮助、怎么用 | 打开帮助卡片 |
 
-bridge 还会注册只读 `feishu://` host URI：
+## OMP 模式
 
-- `feishu://current/context`
-- `feishu://message/<message_id>`
+不设置 `agentBackend` 时，默认使用 OMP。已有 OMP 配置可以继续使用：
 
-同一 chat/topic 在 OMP 运行中继续发消息时，会作为 `follow_up` 进入当前 run，而不是等当前 run 结束后另起一轮。消息以 `!` 开头时会作为 `steer` 发送。
+```json
+{
+  "preferences": {
+    "agentBackend": "omp",
+    "ompBinary": "omp",
+    "ompSessionDir": "~/.feishu-omp-bridge/omp-sessions"
+  }
+}
+```
 
-旧配置里的 `codexBinary` 和 `codexModel` 仍会作为 fallback 读取，便于旧配置启动后手动迁移。
+OMP 模式支持飞书私聊、群聊、话题、流式卡片、工具调用、审批和 host tools。
+
+## 常用命令
+
+```bash
+node bin/feishu-omp-bridge.mjs run
+node bin/feishu-omp-bridge.mjs start
+node bin/feishu-omp-bridge.mjs status
+node bin/feishu-omp-bridge.mjs restart
+node bin/feishu-omp-bridge.mjs stop
+node bin/feishu-omp-bridge.mjs ps
+node bin/feishu-omp-bridge.mjs --help
+```
+
+后台服务使用 macOS `launchd`、Linux `systemd user` 或 Windows 任务计划程序。
+
+英文命令仍兼容，例如 `/status`、`/stop`、`/new`、`/config`、`/reconnect`、`/help`，但普通用户不需要记忆它们。
+
+## 群聊是否需要 @机器人
+
+默认情况下，普通群聊和话题群需要 `@机器人` 才响应，私聊不需要。若要允许群内不 @ 机器人也能触发：
+
+```json
+{
+  "preferences": {
+    "requireMentionInGroup": false
+  }
+}
+```
+
+项目话题连接后，直接在话题中发送消息即可；是否需要 @ 机器人取决于上述配置。
+
+## 本机数据目录
+
+默认目录：`~/.feishu-omp-bridge/`
+
+| 文件或目录 | 作用 |
+| --- | --- |
+| `config.json` | 应用配置和 SecretRef |
+| `secrets.enc` | 本机加密密钥存储 |
+| `sessions.json` | 飞书 chat/topic 到 agent session 的映射 |
+| `project-bindings.json` | 项目群、话题和 Codex session 的映射 |
+| `logs/` | 结构化日志 |
+| `media/` | 飞书图片和文件缓存 |
+
+Codex 原始会话通常由本机 Codex 保存在 `~/.codex/sessions/`。Bridge 通过 app-server 读取和继续会话，不会把会话内容写进本项目。
+
+## 安全要求
+
+- 不要提交 `config.json`、`secrets.enc`、日志、会话 JSONL、`.env` 或本机路径清单。
+- 不要公开 App Secret、用户 open_id、chat_id、topic_id、Codex thread_id 或完整个人路径。
+- 建议配置 `allowedUsers`、`allowedChats` 和 `admins`，限制可以驱动本机 Agent 的用户和群聊。
+- 建议只开放必要的 `projectRoots`，不要把整个用户目录作为项目根目录。
+- 如果凭据误提交，立即在飞书开放平台重置 App Secret，并清理 Git 历史。
+
+## 测试
+
+```bash
+pnpm typecheck
+pnpm test
+pnpm build
+```
 
 ## 故障排查
 
-- `run` 启动时报找不到 `omp`：确认 `omp --version` 可用，并先运行一次 `omp` 完成模型 / 认证配置。
-- OMP 没有继续上次对话：发 `/status` 查看 cwd 和 session；cwd 变化会让 bridge 自动新建 session。
-- 群聊没响应：确认消息里 `@bot`，或在 `/config` 里调整群聊 mention 策略。
-- 卡片长时间不动：可用 `/stop` 终止当前任务，或用 `/timeout 10` 为当前 session 开启 idle 探活。
-- OMP 等待选择 / 输入时：直接回复单独出现的“OMP 交互”卡片；该请求挂起期间 idle watchdog 会暂停。
-- 飞书 API 工具不可用：按启动提示安装并绑定 `lark-cli`。
+### 项目列表为空
+
+确认 `projectRoots` 是存在的本地目录，并且 Bridge 进程对这些目录有读取权限。项目不要求是 Git 仓库。
+
+### 历史会话没有显示
+
+会话列表按项目目录过滤，并隐藏已归档会话。确认 Codex 桌面端和 Bridge 使用的是同一个本机用户和 Codex 数据目录。
+
+### 飞书群里没有回复
+
+确认消息位于已连接的话题中；普通项目群顶层只响应项目卡片和快捷入口。普通群聊还要检查是否 @ 机器人，或将 `requireMentionInGroup` 设置为 `false`。
+
+### 模型或 service tier 报错
+
+不要在 Bridge 中硬编码模型、provider 或 service tier。先确认设备上的 Codex 能正常启动，再确认 Bridge 使用的是桌面端 runtime 或通过 `CODEX_CLI_PATH` 指定了正确的 Codex binary。
+
+### Codex 桌面端暂时看不到飞书新消息
+
+消息会先写入本机 Codex session，并通过 app-server 正常执行。桌面端列表可能不会实时刷新外部 app-server 写入的轮次；重新打开或刷新对应 Codex 任务即可查看。
+
+## 开发
+
+```bash
+pnpm install
+pnpm dev
+pnpm typecheck
+pnpm test
+pnpm build
+```
+
+## 许可证
+
+MIT

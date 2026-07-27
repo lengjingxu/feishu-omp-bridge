@@ -1,7 +1,7 @@
 {
   "name": "feishu-omp-bridge",
   "version": "0.1.0",
-  "description": "Bridge Feishu/Lark messenger with the local Oh My Pi CLI",
+  "description": "Bridge Feishu/Lark messenger with local Codex app-server or Oh My Pi",
   "type": "module",
   "bin": {
     "feishu-omp-bridge": "./bin/feishu-omp-bridge.mjs"
@@ -54,6 +54,8 @@
     "lark",
     "omp",
     "oh-my-pi",
+    "codex",
+    "app-server",
     "cli",
     "channel",
     "bridge"

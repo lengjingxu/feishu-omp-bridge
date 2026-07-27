@@ -2,12 +2,19 @@ node_modules/
 dist/
 coverage/
 *.log
+*.jsonl
 *.tsbuildinfo
 
 .env
 .env.local
 .env.*.local
 .npmrc
+
+# Local bridge state and agent session data
+.feishu-omp-bridge/
+secrets.enc
+sessions.json
+project-bindings.json
 
 .DS_Store
 .idea/
