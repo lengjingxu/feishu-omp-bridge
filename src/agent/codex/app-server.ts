@@ -105,7 +105,17 @@ export class CodexAppServerClient {
   private async start(): Promise<void> {
     const child = spawn(this.binary, ['app-server', '--listen', 'stdio://'], {
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, FEISHU_CODEX_BRIDGE: '1' },
+      // Do not leak the parent Codex/Desktop turn context into app-server.
+      // Those variables can select a model for the calling desktop task and
+      // make the bridge ignore the user's normal device configuration.
+      env: Object.fromEntries(
+        Object.entries(process.env).filter(([key]) => !new Set([
+          'CODEX_CI',
+          'CODEX_SHELL',
+          'CODEX_THREAD_ID',
+          'CODEX_INTERNAL_ORIGINATOR_OVERRIDE',
+        ]).has(key)),
+      ),
     });
     this.child = child;
     const rl = createInterface({ input: child.stdout, crlfDelay: Infinity });

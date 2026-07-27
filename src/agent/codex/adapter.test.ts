@@ -13,20 +13,22 @@ import { createInterface } from 'node:readline';
 if (process.argv.includes('--version')) { console.log('codex-cli test'); process.exit(0); }
 const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
 const send = (value) => console.log(JSON.stringify(value));
+let activeThreadId = 'thread-new';
 for await (const line of rl) {
   const msg = JSON.parse(line);
   if (msg.method === 'initialize') send({ id: msg.id, result: {} });
   if (msg.method === 'thread/list') send({ id: msg.id, result: { data: [{ id: 'thread-existing', name: '旧会话', preview: '修复卡片', cwd: '/tmp/project', updatedAt: 10, status: { type: 'idle' } }], nextCursor: msg.params.cursor ? null : 'cursor-2', backwardsCursor: null } });
+  if (msg.method === 'model/list') send({ id: msg.id, result: { data: [{ model: 'gpt-5.6-sol', isDefault: true }] } });
   if (msg.method === 'thread/start') send({ id: msg.id, result: { thread: { id: 'thread-new', name: null, preview: '', cwd: '/tmp/project' } } });
   if (msg.method === 'thread/resume') {
     if (msg.params.threadId === 'missing-rollout') send({ id: msg.id, error: { code: -32000, message: 'no rollout found for thread id missing-rollout' } });
-    else send({ id: msg.id, result: { thread: { id: msg.params.threadId, cwd: '/tmp/project' } } });
+    else { activeThreadId = msg.params.threadId; send({ id: msg.id, result: { thread: { id: msg.params.threadId, cwd: '/tmp/project' } } }); }
   }
   if (msg.method === 'thread/read') send({ id: msg.id, result: { thread: { id: msg.params.threadId, sessionId: 'session-1', name: '详情会话', preview: '查看详情', cwd: '/tmp/project', updatedAt: 20, status: { type: 'active', activeFlags: ['waitingOnUserInput'] }, source: 'vscode', turns: [{ items: [{ type: 'userMessage', content: [{ type: 'text', text: '请查看', text_elements: [] }] }, { type: 'agentMessage', text: '正在查看' }, { type: 'commandExecution', command: 'pnpm test' }] }] } } });
   if (msg.method === 'turn/start') {
     send({ id: msg.id, result: { turn: { id: 'turn-1' } } });
-    send({ method: 'item/agentMessage/delta', params: { threadId: 'thread-new', turnId: 'turn-1', itemId: 'item-1', delta: '完成' } });
-    send({ method: 'turn/completed', params: { threadId: 'thread-new', turn: { id: 'turn-1', status: 'completed' } } });
+    send({ method: 'item/agentMessage/delta', params: { threadId: activeThreadId, turnId: 'turn-1', itemId: 'item-1', delta: '完成' } });
+    send({ method: 'turn/completed', params: { threadId: activeThreadId, turn: { id: 'turn-1', status: 'completed' } } });
   }
   if (msg.method === 'turn/interrupt') send({ id: msg.id, result: {} });
   if (msg.method === 'thread/archive') send({ id: msg.id, result: {} });
@@ -86,9 +88,20 @@ describe('CodexAdapter', () => {
     const run = adapter.run({ prompt: '继续处理', sessionId: 'missing-rollout', cwd: '/tmp/project' });
     await expect(collect(run.events)).resolves.toEqual([
       { type: 'ui_notice', message: '原 Codex 会话没有可恢复的执行记录，已自动新建会话。', level: 'warning' },
-      { type: 'system', sessionId: 'thread-new', cwd: '/tmp/project', model: undefined },
+      { type: 'system', sessionId: 'thread-new', cwd: '/tmp/project', model: 'gpt-5.6-sol' },
       { type: 'text', delta: '完成' },
       { type: 'done', sessionId: 'thread-new' },
+    ]);
+    await adapter.close();
+  });
+
+  it('resumes historical threads with the current app-server default model', async () => {
+    const adapter = new CodexAdapter({ binary: await fakeCodex() });
+    const run = adapter.run({ prompt: '继续处理', sessionId: 'thread-existing', cwd: '/tmp/project' });
+    await expect(collect(run.events)).resolves.toEqual([
+      { type: 'system', sessionId: 'thread-existing', cwd: '/tmp/project', model: 'gpt-5.6-sol' },
+      { type: 'text', delta: '完成' },
+      { type: 'done', sessionId: 'thread-existing' },
     ]);
     await adapter.close();
   });

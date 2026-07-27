@@ -49,6 +49,8 @@ export class CodexAdapter implements AgentAdapter {
   readonly id = 'codex';
   readonly displayName = 'Codex';
   private readonly client: CodexAppServerClient;
+  private defaultModel?: string;
+  private defaultModelPromise?: Promise<string | undefined>;
 
   constructor(opts: CodexAdapterOptions = {}) {
     this.client = new CodexAppServerClient(opts.binary);
@@ -60,6 +62,33 @@ export class CodexAdapter implements AgentAdapter {
 
   async close(): Promise<void> {
     await this.client.close();
+  }
+
+  /**
+   * Historical threads retain the model they were created with.  Resolve the
+   * current app-server default before resuming one so an old/incompatible
+   * model does not keep breaking an otherwise healthy device configuration.
+   */
+  private async resolveDefaultModel(): Promise<string | undefined> {
+    if (this.defaultModel) return this.defaultModel;
+    if (!this.defaultModelPromise) {
+      this.defaultModelPromise = this.client.request<{
+        data?: Array<{ model?: unknown; isDefault?: unknown }>;
+      }>('model/list', {}).then((response) => {
+        const model = response.data?.find((entry) => entry.isDefault === true && typeof entry.model === 'string')?.model;
+        if (typeof model === 'string' && model.trim()) {
+          this.defaultModel = model.trim();
+          return this.defaultModel;
+        }
+        return undefined;
+      }).catch((err) => {
+        log.warn('codex', 'default-model-unavailable', { error: err instanceof Error ? err.message : String(err) });
+        return undefined;
+      }).finally(() => {
+        this.defaultModelPromise = undefined;
+      });
+    }
+    return this.defaultModelPromise;
   }
 
   async listSessions(cwd: string): Promise<SessionSummary[]> {
@@ -293,10 +322,16 @@ export class CodexAdapter implements AgentAdapter {
         await this.client.ensureStarted();
         unsubscribe = this.client.onNotification(handleNotification);
         unsubscribeRequests = this.client.onServerRequest(handleServerRequest);
+        const effectiveModel = opts.model ?? (opts.sessionId ? await this.resolveDefaultModel() : undefined);
+        if (opts.sessionId) log.info('codex', 'resolved-model', { sessionId: opts.sessionId, model: effectiveModel ?? null });
         let thread: { id?: string; thread?: { id?: string } };
         if (opts.sessionId) {
           try {
-            thread = await client.request('thread/resume', { threadId: opts.sessionId, ...(opts.cwd ? { cwd: opts.cwd } : {}) });
+            thread = await client.request('thread/resume', {
+              threadId: opts.sessionId,
+              ...(opts.cwd ? { cwd: opts.cwd } : {}),
+              ...(effectiveModel ? { model: effectiveModel } : {}),
+            });
           } catch (err) {
             if (!isMissingRolloutError(err)) throw err;
             queue.push({ type: 'ui_notice', message: '原 Codex 会话没有可恢复的执行记录，已自动新建会话。', level: 'warning' });
@@ -307,12 +342,12 @@ export class CodexAdapter implements AgentAdapter {
         }
         threadId = thread.thread?.id ?? thread.id ?? opts.sessionId;
         if (!threadId) throw new Error('Codex app-server did not return a thread id');
-        queue.push({ type: 'system', sessionId: threadId, cwd: opts.cwd, model: opts.model });
+        queue.push({ type: 'system', sessionId: threadId, cwd: opts.cwd, model: effectiveModel });
         const turn = await this.client.request<{ id?: string; turn?: { id?: string } }>('turn/start', {
           threadId,
           input: [{ type: 'text', text: opts.prompt, text_elements: [] }],
           ...(opts.cwd ? { cwd: opts.cwd } : {}),
-          ...(opts.model ? { model: opts.model } : {}),
+          ...(effectiveModel ? { model: effectiveModel } : {}),
         });
         turnId = turn.turn?.id ?? turn.id;
       } catch (err) {
