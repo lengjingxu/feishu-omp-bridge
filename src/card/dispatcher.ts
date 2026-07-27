@@ -19,6 +19,7 @@ import type { WorkspaceStore } from '../workspace/store';
 import type { ProjectCatalog } from '../project/catalog';
 import type { ProjectBindingStore } from '../project/types';
 import { isThreadScoped } from '../bot/scope';
+import { lookupMessageThreadId } from '../bot/thread';
 
 /** Marker key on a button's value object that flags the cardAction as
  * a callback that should be forwarded back to the agent instead of dispatched
@@ -144,24 +145,6 @@ async function resolveScope(
     return { scope: chatId, threadId: undefined, mode };
   }
   return { scope: `${chatId}:${threadId}`, threadId, mode };
-}
-
-async function lookupMessageThreadId(
-  channel: LarkChannel,
-  messageId: string,
-): Promise<string | undefined> {
-  try {
-    const r = (await channel.rawClient.im.v1.message.get({
-      path: { message_id: messageId },
-    })) as { data?: { items?: { thread_id?: string }[] } };
-    return r?.data?.items?.[0]?.thread_id;
-  } catch (err) {
-    log.warn('cardAction', 'thread-id-lookup-failed', {
-      messageId,
-      err: err instanceof Error ? err.message : String(err),
-    });
-    return undefined;
-  }
 }
 
 function forwardToAgent(

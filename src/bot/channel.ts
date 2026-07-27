@@ -381,6 +381,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
   const chatMode = await chatModeCache.resolve(channel, msg.chatId);
   const project = projectBindings?.findProjectByChat(msg.chatId);
   const threadScoped = isThreadScoped(chatMode, msg.threadId, Boolean(project));
+  const topicBinding = findTopicBinding(projectBindings, msg.chatId, msg.threadId, msg.rootId);
   const scope = threadScoped
     ? `${msg.chatId}:${msg.threadId}`
     : msg.chatId;
@@ -462,7 +463,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
       pending.cancel(scope);
       return;
     }
-    if (project && msg.threadId && !projectBindings?.findTopic(msg.chatId, msg.threadId)) {
+    if (project && msg.threadId && !topicBinding) {
       await channel.send(
         msg.chatId,
         { markdown: '这个话题还没有绑定 Codex 会话。请回到项目群，点击“查看会话”，再选择“继续此会话”或“新建会话”。' },
@@ -585,7 +586,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   log.info('prompt', 'built', { promptChars: prompt.length, quotes: quotes.length });
 
   const project = projectBindings?.findProjectByChat(chatId);
-  const topicBinding = threadId ? projectBindings?.findTopic(chatId, threadId) : undefined;
+  const topicBinding = findTopicBinding(projectBindings, chatId, threadId, firstMsg.rootId);
   const threadScoped = isThreadScoped(mode, threadId, Boolean(project));
   const cwd = project?.cwd ?? workspaces.cwdFor(scope) ?? homedir();
   const resumeFrom = topicBinding?.codexThreadId ?? sessions.resumeFor(scope, cwd);
@@ -736,6 +737,19 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       await removeReaction(channel, lastMsg.messageId, reactionId);
     }
   }
+}
+
+function findTopicBinding(
+  bindings: ProjectBindingStore | undefined,
+  chatId: string,
+  threadId: string | undefined,
+  rootId: string | undefined,
+): import('../project/types').TopicBinding | undefined {
+  if (!bindings) return undefined;
+  // New bindings use the real `omt_...` thread id. The root-id fallback keeps
+  // topics created by older bridge versions usable after this migration.
+  return (threadId ? bindings.findTopic(chatId, threadId) : undefined)
+    ?? (rootId ? bindings.findTopic(chatId, rootId) : undefined);
 }
 
 /**

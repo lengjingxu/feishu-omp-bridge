@@ -48,6 +48,7 @@ import type { SessionStore } from '../session/store';
 import { validateAppCredentials } from '../utils/feishu-auth';
 import type { WorkspaceStore } from '../workspace/store';
 import { createBoundChat, defaultChatName } from '../bot/group';
+import { lookupMessageThreadId } from '../bot/thread';
 import type { ProjectCatalog } from '../project/catalog';
 import type { ProjectBindingStore } from '../project/types';
 
@@ -381,9 +382,13 @@ async function handleSession(args: string, ctx: CommandContext): Promise<void> {
   const existing = ctx.projectBindings.findTopicByThread(threadId);
   if (existing) return reply(ctx, '这个会话已经绑定了一个话题，请使用原话题继续。');
   const root = await ctx.channel.send(ctx.msg.chatId, { card: topicWelcomeCard(project.name, title, project.cwd) });
+  // `send()` returns the root message id (`om_...`), while topic messages
+  // carry the separate Feishu thread id (`omt_...`). Persist the actual
+  // thread id so inbound messages and card actions resolve the same binding.
+  const topicId = await lookupMessageThreadId(ctx.channel, root.messageId) ?? root.messageId;
   await ctx.projectBindings.bindTopic({
     chatId: ctx.msg.chatId,
-    topicId: root.messageId,
+    topicId,
     projectKey: project.projectKey,
     codexThreadId: threadId,
     createdBy: ctx.msg.senderId,
